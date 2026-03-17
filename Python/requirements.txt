@@ -1,0 +1,12 @@
+# --- Networking & Discovery (Requirement 1) ---
+# Used for mDNS discovery to find the Java client on the local network.
+zeroconf==0.132.2
+
+# --- Cryptography (Requirements 2, 6, 7, 8, 9) ---
+# The gold standard for Python. Supports X25519, AES-GCM, and HKDF.
+cryptography==42.0.5
+
+# --- Utilities ---
+# Useful for handling the JSON-based protocol and asynchronous connections.
+# (Standard library json is usually enough, but these help with speed/async)
+pydantic==2.6.4

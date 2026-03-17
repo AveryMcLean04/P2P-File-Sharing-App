@@ -39,7 +39,7 @@ Files stored in the `/data` folders are encrypted at rest.
 
 ---
 
-## 📂 Shared Message Formats
+## Shared Message Formats
 All messages follow this JSON structure:
 ```json
 {
