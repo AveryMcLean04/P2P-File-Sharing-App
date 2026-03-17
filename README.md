@@ -1,5 +1,50 @@
-# P2P-File-Sharing-App
-A peer-to-peer file sharing application between 2 clients using Python and Java for CISC 468 course project.
+﻿# P2P Secure File Sharing App (CISC 468)
 
-string: _cisc468secshare._tcp.local.
-port number: 5000
+A cross-platform (Python/Java) peer-to-peer file sharing application focusing on mutual authentication, perfect forward secrecy, and local network discovery.
+
+## Connection Details
+- **mDNS Service String:** `_cisc468secshare._tcp.local.`
+- **Port Number:** `5000`
+- **Serialization:** UTF-8 JSON (Binary data must be Base64 encoded)
+
+---
+
+## Project Structure
+- `/python_client/`: Python 3.12 implementation (Group Member A)
+- `/java_client/`: Java/Maven implementation (Group Member B)
+- `/shared_test_files/`: Standard files used to verify integrity/hashes.
+
+---
+
+## Protocol Specifications
+
+### 1. Peer Discovery (Requirement 1)
+Clients broadcast their `user_id` via mDNS. 
+- **Python:** Uses `zeroconf` library.
+- **Java:** Uses `JmDNS` library.
+
+### 2. Handshake & PFS (Requirement 2 & 8)
+To ensure **Perfect Forward Secrecy**, we use an Ephemeral Diffie-Hellman exchange:
+1. **Algorithm:** X25519 (ECDH).
+2. **KDF:** HKDF-SHA256 to derive the session key.
+3. **Session Key:** AES-256-GCM (12-byte IV, 16-byte Tag).
+
+### 3. File Integrity (Requirement 5 & 7)
+All files are hashed using **SHA-256** before transmission. The receiver must verify the hash against the decrypted file to ensure no tampering occurred.
+
+### 4. Local Storage (Requirement 9)
+Files stored in the `/data` folders are encrypted at rest.
+- **Algorithm:** AES-256-CBC.
+- **Key Derivation:** PBKDF2 with 100k iterations.
+
+---
+
+## 📂 Shared Message Formats
+All messages follow this JSON structure:
+```json
+{
+  "type": "FILE_REQ | LIST_REQ | AUTH_CHALLENGE",
+  "sender": "user_id",
+  "payload": { ... },
+  "signature": "Base64_String"
+}
