@@ -25,7 +25,7 @@ public class PeerDiscovery {
                 jmdns.requestServiceInfo(event.getType(), event.getName());
             }
             public void serviceResolved(ServiceEvent event) {
-                if (event.getName().equals(myName)) return; // ignore ourselves
+                // if (event.getName().equals(myName)) return; // ignore ourselves
                 String address = event.getInfo().getHostAddresses()[0];
                 System.out.println("Found peer: " + event.getName() + " @ " + address + ":" + PORT);
             }
