@@ -17,50 +17,85 @@ class PeerLogic:
     def process_handshake_init(self, sender, payload, addr):
         session = SessionManager()
         try:
+            # 1. Extract and Decode incoming data
             peer_ephemeral = base64.b64decode(payload["ephemeral_key"])
             peer_sig = base64.b64decode(payload["signature"])
 
-            if not self.app.key_mgr.verify_peer_signature(sender, peer_ephemeral, peer_sig):
+            # 2. Retrieve the actual Public Key for the sender
+            peers = self.app.discovery.get_active_peers()
+            peer_info = peers.get(sender)
+
+            if not peer_info or "public_key" not in peer_info:
+                self.app.log("security", f"AUTH FAILURE: No public key found for {sender}")
+                return
+
+            # Convert the stored public key string/base64 to bytes
+            peer_static_pub_bytes = base64.b64decode(peer_info["public_key"])
+
+            # 3. Verify the signature using the BYTES, not the sender's name string
+            if not self.app.key_mgr.verify_peer_signature(peer_static_pub_bytes, peer_ephemeral, peer_sig):
                 self.app.log("security", f"AUTH FAILURE: {sender} signature invalid!")
                 return
 
+            # 4. Success - Derive shared secret and set up encryption
             shared_key = session.derive_shared_secret(peer_ephemeral)
             self.app.active_sessions[sender] = {"encryptor": FileEncryptor(shared_key)}
             
+            # 5. Prepare Response (Sign our own ephemeral key)
             my_ephemeral = session.get_public_bytes()
             my_signature = self.app.key_mgr.sign_data(my_ephemeral)
 
             response = {
-                "type": "HANDSHAKE_RESPONSE", "sender": self.app.config.user_id,
+                "type": "HANDSHAKE_RESPONSE", 
+                "sender": self.app.config.user_id,
                 "payload": {
                     "ephemeral_key": base64.b64encode(my_ephemeral).decode('utf-8'),
                     "signature": base64.b64encode(my_signature).decode('utf-8')
                 }
             }
-            peers = self.app.discovery.get_active_peers()
-            peer_port = peers.get(sender, {}).get('port', addr[1])
+            
+            # 6. Send back to the peer
+            peer_port = peer_info.get('port', addr[1])
             self.app.network.send_message(addr[0], peer_port, response)
             self.app.log("security", f"Authenticated tunnel established with {sender}")
+
         except Exception as e:
-            self.app.log("error", f"Handshake failed: {e}")
+            self.app.log("error", f"Handshake init failed: {e}")
 
     def process_handshake_response(self, sender, payload):
+        # Only process if we are actually expecting a response from this sender
         if sender in self.app.active_sessions and "session" in self.app.active_sessions[sender]:
             try:
                 session = self.app.active_sessions[sender]["session"]
                 peer_ephemeral = base64.b64decode(payload["ephemeral_key"])
                 peer_sig = base64.b64decode(payload["signature"])
 
-                if not self.app.key_mgr.verify_peer_signature(sender, peer_ephemeral, peer_sig):
-                    self.app.log("security", f"AUTH FAILURE: {sender} check failed!")
+                # 1. Retrieve the Peer's Public Key
+                peers = self.app.discovery.get_active_peers()
+                peer_info = peers.get(sender)
+                
+                if not peer_info or "public_key" not in peer_info:
+                    self.app.log("security", f"AUTH FAILURE: Registry missing key for {sender}")
+                    return
+
+                peer_static_pub_bytes = base64.b64decode(peer_info["public_key"])
+
+                # 2. Verify Identity
+                if not self.app.key_mgr.verify_peer_signature(peer_static_pub_bytes, peer_ephemeral, peer_sig):
+                    self.app.log("security", f"AUTH FAILURE: {sender} response signature check failed!")
+                    # Clean up the failed session attempt
                     del self.app.active_sessions[sender]
                     return
 
+                # 3. Finalize Encryption
                 shared_key = session.derive_shared_secret(peer_ephemeral)
                 self.app.active_sessions[sender] = {"encryptor": FileEncryptor(shared_key)}
                 self.app.log("security", f"Authenticated tunnel finalized with {sender}")
+
             except Exception as e:
                 self.app.log("error", f"Response auth failed: {e}")
+                if sender in self.app.active_sessions:
+                    del self.app.active_sessions[sender]
 
     # --- [REQ #3, #4, #5] FILE OPERATIONS ---
 
