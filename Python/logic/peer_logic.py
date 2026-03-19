@@ -176,7 +176,7 @@ class PeerLogic:
             session = SessionManager()
             self.app.active_sessions[target] = {"session": session}
             e_key = session.get_public_bytes()
-            sig = self.app.key_mgr.sign_data(e_key)
+            sig = self.app.key_mgr.sign_message(e_key)
             
             self.app.network.send_message(peers[target]['address'], peers[target]['port'], {
                 "type": "HANDSHAKE_INIT", "sender": self.app.config.user_id,

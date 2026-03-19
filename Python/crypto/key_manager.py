@@ -97,6 +97,9 @@ class KeyManager:
             raise RuntimeError("Private key not loaded.")
         return self.private_key.sign(message_bytes)
 
+    def sign_data(self, data: bytes) -> bytes:
+        return self.sign_message(data)
+
     def verify_peer_signature(self, peer_public_key_bytes: bytes, message: bytes, signature: bytes) -> bool:
         """Helper to verify a peer's identity signature."""
         try:
