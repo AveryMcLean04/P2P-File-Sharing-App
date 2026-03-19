@@ -20,7 +20,7 @@ class PeerLogic:
             peer_ephemeral = base64.b64decode(payload["ephemeral_key"])
             peer_sig = base64.b64decode(payload["signature"])
 
-            if not self.app.key_mgr.verify_signature(sender, peer_ephemeral, peer_sig):
+            if not self.app.key_mgr.verify_peer_signature(sender, peer_ephemeral, peer_sig):
                 self.app.log("security", f"AUTH FAILURE: {sender} signature invalid!")
                 return
 
@@ -51,7 +51,7 @@ class PeerLogic:
                 peer_ephemeral = base64.b64decode(payload["ephemeral_key"])
                 peer_sig = base64.b64decode(payload["signature"])
 
-                if not self.app.key_mgr.verify_signature(sender, peer_ephemeral, peer_sig):
+                if not self.app.key_mgr.verify_peer_signature(sender, peer_ephemeral, peer_sig):
                     self.app.log("security", f"AUTH FAILURE: {sender} check failed!")
                     del self.app.active_sessions[sender]
                     return
