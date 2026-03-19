@@ -4,11 +4,17 @@ import javax.jmdns.ServiceInfo;
 import javax.jmdns.ServiceListener;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Scanner;
 
 public class PeerDiscovery {
 
     static final String SERVICE_TYPE = "_cisc468secshare._tcp.local.";
     static final int PORT = 5000;
+
+    // Stores discovered peers: name -> address:port
+    static final Map<String, String[]> activePeers = new HashMap<>();
 
     static InetAddress getLocalNetworkAddress() throws Exception {
         try (DatagramSocket socket = new DatagramSocket()) {
@@ -41,17 +47,73 @@ public class PeerDiscovery {
                 if (event.getName().equals(myName)) return;
                 String address = event.getInfo().getHostAddresses()[0];
                 int peerPort = event.getInfo().getPort();
-                System.out.println("Found peer: " + event.getName() + " @ " + address + ":" + peerPort);
-
-                String testMsg = "{\"type\":\"FILE_LIST_REQUEST\",\"sender\":\"" + myName + "\",\"payload\":{}}";
-                network.sendMessage(address, peerPort, testMsg);
+                activePeers.put(event.getName(), new String[]{address, String.valueOf(peerPort)});
+                System.out.println("\n[+] Peer found: " + event.getName() + " @ " + address + ":" + peerPort);
+                System.out.print(myName + " > ");  // reprint prompt
             }
             public void serviceRemoved(ServiceEvent event) {
-                System.out.println("Peer left: " + event.getName());
+                activePeers.remove(event.getName());
+                System.out.println("\n[+] Peer left: " + event.getName());
+                System.out.print(myName + " > ");  // reprint prompt
             }
         });
 
-        System.out.println("Listening for peers... (Ctrl+C to quit)");
-        Thread.sleep(Long.MAX_VALUE);
+        // CLI loop
+        System.out.println("\n==================================================");
+        System.out.println("        SECURE P2P: " + myName + " (Port " + PORT + ")");
+        System.out.println("  Type 'help' for commands");
+        System.out.println("==================================================");
+
+        Scanner scanner = new Scanner(System.in);
+        while (true) {
+            System.out.print("\n" + myName + " > ");
+            String input = scanner.nextLine().trim();
+            if (input.isEmpty()) continue;
+
+            String[] parts = input.split(" ");
+            String cmd = parts[0].toLowerCase();
+
+            switch (cmd) {
+                case "help":
+                    System.out.println("\nCOMMAND      | DESCRIPTION");
+                    System.out.println("-------------------------------------------");
+                    System.out.println("list         | List discovered peers");
+                    System.out.println("fetch        | Request file list from a peer");
+                    System.out.println("exit         | Shut down");
+                    break;
+
+                case "list":
+                    if (activePeers.isEmpty()) {
+                        System.out.println("[-] No peers discovered.");
+                    } else {
+                        for (Map.Entry<String, String[]> entry : activePeers.entrySet()) {
+                            System.out.println(" > " + entry.getKey() + " [" + entry.getValue()[0] + ":" + entry.getValue()[1] + "]");
+                        }
+                    }
+                    break;
+
+                case "fetch":
+                    System.out.print("Fetch list from: ");
+                    String target = scanner.nextLine().trim();
+                    if (!activePeers.containsKey(target)) {
+                        System.out.println("[-] Peer '" + target + "' not found.");
+                    } else {
+                        String[] peer = activePeers.get(target);
+                        String msg = "{\"type\":\"FILE_LIST_REQUEST\",\"sender\":\"" + myName + "\",\"payload\":{}}";
+                        network.sendMessage(peer[0], Integer.parseInt(peer[1]), msg);
+                    }
+                    break;
+
+                case "exit":
+                    System.out.println("[*] Shutting down...");
+                    jmdns.unregisterAllServices();
+                    jmdns.close();
+                    System.exit(0);
+                    break;
+
+                default:
+                    System.out.println("[-] Unknown command '" + cmd + "'. Type 'help' for options.");
+            }
+        }
     }
 }
