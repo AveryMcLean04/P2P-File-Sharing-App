@@ -3,7 +3,7 @@ import sys
 import time
 import base64
 from pathlib import Path
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 # Path setup and imports
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
@@ -63,11 +63,31 @@ class SecureP2PApp:
         """Creates necessary folder structure using pathlib."""
         (self.data_path / "encrypted").mkdir(parents=True, exist_ok=True)
         (self.data_path / "keys").mkdir(parents=True, exist_ok=True)
+        (self.data_path / "received").mkdir(parents=True, exist_ok=True)
         self.shared_path.mkdir(parents=True, exist_ok=True)
 
     def log(self, category, message):
         timestamp = time.strftime('%H:%M:%S')
         print(f"[{timestamp}] [{category.upper():^10}] {message}")
+
+    # --- NETWORK DISPATCHER ---
+
+    def handle_incoming_message(self, message, addr):
+        """Routes incoming dictionary messages to the correct logic."""
+        m_type = message.get("type")
+        sender = message.get("sender")
+        payload = message.get("payload")
+
+        if m_type == "HANDSHAKE_INIT":
+            self._process_handshake_init(sender, payload, addr)
+        elif m_type == "HANDSHAKE_RESPONSE":
+            self._process_handshake_response(sender, payload)
+        elif m_type == "FILE_TRANSFER":
+            self._process_file_transfer(sender, payload)
+        elif m_type == "FILE_LIST_REQUEST":
+            self._handle_list_request(sender)
+        else:
+            self.log("network", f"Unknown message type from {sender}: {m_type}")
 
     # --- CLI COMMAND METHODS ---
 
@@ -83,7 +103,7 @@ class SecureP2PApp:
             return print("[-] No peers discovered on the network.")
         
         for name, info in peers.items():
-            status = "?? Secured" if name in self.active_sessions else "?? Open"
+            status = "Secured" if name in self.active_sessions and "encryptor" in self.active_sessions[name] else "?? Open"
             print(f" > {name:<15} [{info['address']}:{info['port']}] {status}")
 
     def _cmd_connect(self, *args):
@@ -94,6 +114,7 @@ class SecureP2PApp:
             return print(f"[-] Peer '{target}' not found.")
 
         session = SessionManager()
+        # Keep track of the pending session to finalize once response arrives
         self.active_sessions[target] = {"session": session}
         
         handshake_data = {
@@ -153,71 +174,76 @@ class SecureP2PApp:
         self.shutdown()
         sys.exit(0)
 
-    # --- MESSAGE PROCESSING ---
-
-    def handle_incoming_message(self, msg, addr):
-        m_type = msg.get("type")
-        sender = msg.get("sender")
-        payload = msg.get("payload", {})
-
-        handlers = {
-            "HANDSHAKE_INIT": lambda: self._process_handshake_init(sender, payload, addr),
-            "HANDSHAKE_RESPONSE": lambda: self._process_handshake_response(sender, payload),
-            "FILE_LIST_REQUEST": lambda: self._process_file_list_request(addr),
-            "FILE_LIST_RESPONSE": lambda: self._process_file_list_response(sender, payload),
-            "FILE_TRANSFER": lambda: self._process_file_transfer(sender, payload)
-        }
-        
-        if m_type in handlers:
-            handlers[m_type]()
+    # --- HANDSHAKE & PROTOCOL LOGIC ---
 
     def _process_handshake_init(self, sender, payload, addr):
+        """Responds to a connection request and derives the key."""
         session = SessionManager()
-        shared_key = session.derive_shared_secret(base64.b64decode(payload["ephemeral_key"]))
-        self.active_sessions[sender] = {"encryptor": FileEncryptor(shared_key)}
-        
-        response = {
-            "type": "HANDSHAKE_RESPONSE",
-            "sender": self.config.user_id,
-            "payload": {
-                "ephemeral_key": base64.b64encode(session.get_public_bytes()).decode('utf-8'),
-                "signature": base64.b64encode(session.sign_ephemeral_key(self.key_mgr.private_key)).decode('utf-8')
+        try:
+            peer_ephemeral_key = base64.b64decode(payload["ephemeral_key"])
+            shared_key = session.derive_shared_secret(peer_ephemeral_key)
+            
+            # Upgrade session immediately for the responder
+            self.active_sessions[sender] = {"encryptor": FileEncryptor(shared_key)}
+            
+            response = {
+                "type": "HANDSHAKE_RESPONSE",
+                "sender": self.config.user_id,
+                "payload": {
+                    "ephemeral_key": base64.b64encode(session.get_public_bytes()).decode('utf-8'),
+                    "signature": base64.b64encode(session.sign_ephemeral_key(self.key_mgr.private_key)).decode('utf-8')
+                }
             }
-        }
-        self.network.send_message(addr[0], self.config.port, response)
-        self.log("security", f"Secure tunnel established (Inbound) with {sender}")
+            
+            # Respond to the peer's actual port from discovery if known, else the incoming addr
+            peers = self.discovery.get_active_peers()
+            peer_port = peers.get(sender, {}).get('port', addr[1])
+            
+            self.network.send_message(addr[0], peer_port, response)
+            self.log("security", f"Secure tunnel established (Inbound) with {sender}")
+        except Exception as e:
+            self.log("error", f"Handshake failed with {sender}: {e}")
 
     def _process_handshake_response(self, sender, payload):
+        """Finalizes the key derivation started by _cmd_connect."""
         if sender in self.active_sessions and "session" in self.active_sessions[sender]:
-            session = self.active_sessions[sender]["session"]
-            shared_key = session.derive_shared_secret(base64.b64decode(payload["ephemeral_key"]))
-            self.active_sessions[sender] = {"encryptor": FileEncryptor(shared_key)}
-            self.log("security", f"Secure tunnel established (Outbound) with {sender}")
-
-    def _process_file_list_request(self, addr):
-        files = [f.name for f in self.shared_path.iterdir() if f.is_file()]
-        self.network.send_message(addr[0], self.config.port, {
-            "type": "FILE_LIST_RESPONSE", "sender": self.config.user_id, "payload": {"files": files}
-        })
-
-    def _process_file_list_response(self, sender, payload):
-        print(f"\n--- Shared Files from {sender} ---")
-        for f in payload.get("files", []): 
-            print(f"  - {f}")
+            try:
+                session = self.active_sessions[sender]["session"]
+                peer_ephemeral_key = base64.b64decode(payload["ephemeral_key"])
+                shared_key = session.derive_shared_secret(peer_ephemeral_key)
+                
+                # Upgrade session from 'pending' (session object) to 'active' (encryptor)
+                self.active_sessions[sender] = {"encryptor": FileEncryptor(shared_key)}
+                self.log("security", f"Secure tunnel established (Outbound) with {sender}")
+            except Exception as e:
+                self.log("error", f"Failed to finalize session with {sender}: {e}")
 
     def _process_file_transfer(self, sender, payload):
-        if sender not in self.active_sessions: return
+        """Decrypts and saves files into the data_{user}/received folder."""
+        if sender not in self.active_sessions or "encryptor" not in self.active_sessions[sender]:
+            self.log("alert", f"Blocked unauthenticated transfer from {sender}")
+            return
         
-        nonce = base64.b64decode(payload["nonce"])
-        ciphertext = base64.b64decode(payload["data"])
-        decrypted = self.active_sessions[sender]["encryptor"].decrypt_data(nonce, ciphertext)
+        try:
+            nonce = base64.b64decode(payload["nonce"])
+            ciphertext = base64.b64decode(payload["data"])
+            encryptor = self.active_sessions[sender]["encryptor"]
+            
+            decrypted = encryptor.decrypt_data(nonce, ciphertext)
 
-        if decrypted:
-            save_path = self.data_path / "encrypted"
-            self.storage.save_file(payload["filename"], decrypted, str(save_path))
-            self.log("success", f"Received and verified: {payload['filename']}")
-        else:
-            self.log("alert", f"Integrity check failed for file from {sender}!")
+            if decrypted:
+                save_dir = self.data_path / "received"
+                self.storage.save_file(payload["filename"], decrypted, str(save_dir))
+                self.log("success", f"Received: {payload['filename']} ({len(decrypted)} bytes)")
+            else:
+                self.log("alert", f"Decryption failed for {payload['filename']}!")
+        except Exception as e:
+            self.log("error", f"File transfer error: {e}")
+
+    def _handle_list_request(self, sender):
+        """Stub for handling file list requests."""
+        self.log("network", f"{sender} requested a file list.")
+        # Logic to send back file list can be added here
 
     # --- LIFECYCLE ---
 
@@ -230,12 +256,16 @@ class SecureP2PApp:
         
         try:
             while True:
-                raw_input = input(f"\n{self.config.user_id} > ").strip().lower().split()
-                if not raw_input: continue
+                user_input = input(f"\n{self.config.user_id} > ").strip()
+                if not user_input:
+                    continue
                 
-                cmd = raw_input[0]
+                parts = user_input.split()
+                cmd = parts[0].lower()
+                args = parts[1:]
+                
                 if cmd in self.commands:
-                    self.commands[cmd]["func"](*raw_input[1:])
+                    self.commands[cmd]["func"](*args)
                 else:
                     print(f"[-] Unknown command '{cmd}'. Type 'help' for options.")
         except (KeyboardInterrupt, SystemExit):
