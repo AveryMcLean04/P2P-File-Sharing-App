@@ -351,8 +351,20 @@ class SecureP2PApp:
             })
 
     def _cmd_rotate(self, *args):
+        # 1. Generate new local keys
         self.key_mgr.generate_new_keys()
-        self.log("security", "Keys rotated locally. (Next: Notify contacts)")
+        new_pub_key = self.key_mgr.get_public_key_bytes()
+    
+        # 2. [REQ #6] Notify all currently connected peers
+        for peer_name in self.active_sessions:
+            peer = self.discovery.get_active_peers().get(peer_name)
+            if peer:
+                self.network.send_message(peer['address'], peer['port'], {
+                    "type": "KEY_MIGRATION",
+                    "sender": self.config.user_id,
+                    "payload": {"new_key": base64.b64encode(new_pub_key).decode('utf-8')}
+                })
+        self.log("security", "Keys rotated and migration notices sent.")
 
     def _cmd_exit(self, *args):
         self.shutdown()
