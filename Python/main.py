@@ -233,28 +233,58 @@ class SecureP2PApp:
     def _process_handshake_init(self, sender, payload, addr):
         session = SessionManager()
         try:
-            peer_key = base64.b64decode(payload["ephemeral_key"])
-            shared_key = session.derive_shared_secret(peer_key)
+            peer_ephemeral_key = base64.b64decode(payload["ephemeral_key"])
+            peer_signature = base64.b64decode(payload["signature"])
+
+            # [REQ #2] MUTUAL AUTH: Verify sender's identity using their public key
+            # key_mgr.get_public_key(sender) should return the long-term key Alice shared previously
+            if not self.key_mgr.verify_signature(sender, peer_ephemeral_key, peer_signature):
+                self.log("security", f"AUTH FAILURE: Signature from {sender} is invalid!")
+                return
+
+            shared_key = session.derive_shared_secret(peer_ephemeral_key)
             self.active_sessions[sender] = {"encryptor": FileEncryptor(shared_key)}
             
+            # [REQ #2] Bob signs his response so Alice can authenticate him too
+            my_ephemeral = session.get_public_bytes()
+            my_signature = self.key_mgr.sign_data(my_ephemeral)
+
             response = {
-                "type": "HANDSHAKE_RESPONSE", "sender": self.config.user_id,
-                "payload": {"ephemeral_key": base64.b64encode(session.get_public_bytes()).decode('utf-8')}
+                "type": "HANDSHAKE_RESPONSE", 
+                "sender": self.config.user_id,
+                "payload": {
+                    "ephemeral_key": base64.b64encode(my_ephemeral).decode('utf-8'),
+                    "signature": base64.b64encode(my_signature).decode('utf-8')
+                }
             }
+            
             peers = self.discovery.get_active_peers()
             peer_port = peers.get(sender, {}).get('port', addr[1])
             self.network.send_message(addr[0], peer_port, response)
-            self.log("security", f"Secure tunnel established with {sender}")
+            self.log("security", f"Authenticated tunnel established with {sender}")
+            
         except Exception as e:
-            self.log("error", f"Handshake failed: {e}")
+            self.log("error", f"Handshake/Auth failed: {e}")
 
     def _process_handshake_response(self, sender, payload):
         if sender in self.active_sessions and "session" in self.active_sessions[sender]:
-            session = self.active_sessions[sender]["session"]
-            peer_key = base64.b64decode(payload["ephemeral_key"])
-            shared_key = session.derive_shared_secret(peer_key)
-            self.active_sessions[sender] = {"encryptor": FileEncryptor(shared_key)}
-            self.log("security", f"Secure tunnel finalized with {sender}")
+            try:
+                session = self.active_sessions[sender]["session"]
+                peer_ephemeral_key = base64.b64decode(payload["ephemeral_key"])
+                peer_signature = base64.b64decode(payload["signature"])
+
+                # [REQ #2] Final verification of Bob's identity
+                if not self.key_mgr.verify_signature(sender, peer_ephemeral_key, peer_signature):
+                    self.log("security", f"AUTH FAILURE: {sender} failed identity check!")
+                    del self.active_sessions[sender]
+                    return
+
+                shared_key = session.derive_shared_secret(peer_ephemeral_key)
+                self.active_sessions[sender] = {"encryptor": FileEncryptor(shared_key)}
+                self.log("security", f"Authenticated tunnel finalized with {sender}")
+                
+            except Exception as e:
+                self.log("error", f"Response auth failed: {e}")
 
     # --- CLI & LIFECYCLE ---
 
@@ -296,11 +326,21 @@ class SecureP2PApp:
         if target in peers:
             session = SessionManager()
             self.active_sessions[target] = {"session": session}
+            
+            # [REQ #2] Create a signature of the ephemeral key to prove identity
+            ephemeral_key_bytes = session.get_public_bytes()
+            signature = self.key_mgr.sign_data(ephemeral_key_bytes) # Uses long-term private key
+            
             self.network.send_message(peers[target]['address'], peers[target]['port'], {
-                "type": "HANDSHAKE_INIT", "sender": self.config.user_id,
-                "payload": {"ephemeral_key": base64.b64encode(session.get_public_bytes()).decode('utf-8')}
+                "type": "HANDSHAKE_INIT", 
+                "sender": self.config.user_id,
+                "payload": {
+                    "ephemeral_key": base64.b64encode(ephemeral_key_bytes).decode('utf-8'),
+                    "signature": base64.b64encode(signature).decode('utf-8')
+                }
             })
-        else: print(f"[-] Peer '{target}' unknown.")
+        else:
+            print(f"[-] Peer '{target}' unknown.")
 
     def _cmd_fetch(self, *args):
         target = input("Fetch from: ")
