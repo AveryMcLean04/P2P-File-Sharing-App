@@ -270,3 +270,40 @@ class PeerLogic:
                     "payload": {"new_key": base64.b64encode(new_pub).decode('utf-8')}
                 })
         self.app.log("security", "Keys rotated and peers notified.")
+
+    def cmd_connect(self, target=None):
+        import time
+
+        if not target:
+            target = input("Connect to: ")
+
+        peer = None
+        for _ in range(10):  # wait up to ~2 seconds
+            peers = self.app.discovery.get_active_peers()
+            peer = peers.get(target)
+            if peer and "public_key" in peer:
+                break
+            time.sleep(0.2)
+
+        if not peer:
+            print(f"[-] Peer '{target}' unknown.")
+            return
+
+        if "public_key" not in peer:
+            print(f"[-] Peer '{target}' discovered, but public key not available yet. Try again.")
+            return
+
+        session = SessionManager()
+        self.app.active_sessions[target] = {"session": session}
+
+        e_key = session.get_public_bytes()
+        sig = self.app.key_mgr.sign_data(e_key)  # keep this consistent
+
+        self.app.network.send_message(peer["address"], peer["port"], {
+            "type": "HANDSHAKE_INIT",
+            "sender": self.app.config.user_id,
+            "payload": {
+                "ephemeral_key": base64.b64encode(e_key).decode("utf-8"),
+                "signature": base64.b64encode(sig).decode("utf-8")
+            }
+        })

@@ -42,7 +42,7 @@ class SecureP2PApp:
         self.key_mgr = KeyManager(keys_dir=str(self.data_path / "keys"))
         self.key_mgr.load_or_generate_keys()
         self.storage = SecureStorage(password="my_secure_password_123")
-        self.discovery = MDNSHandler(self.config.user_id, self.config.port, self.config.service_type)
+        self.discovery = MDNSHandler(user_id=self.config.user_id, port=self.config.port, public_key_bytes=self.key_mgr.get_public_key_bytes())
         self.cli = AppCLI(self)
 
     def log(self, category, message):
