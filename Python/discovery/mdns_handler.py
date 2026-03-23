@@ -1,269 +1,63 @@
 import socket
 import logging
-import threading
-import base64
-from zeroconf import IPVersion, ServiceInfo, Zeroconf, ServiceBrowser
+from zeroconf import ServiceInfo, Zeroconf, ServiceBrowser, ServiceListener
 
-logging.getLogger("zeroconf").setLevel(logging.CRITICAL)
+logger = logging.getLogger("mDNSHandler")
 
-
-class MDNSHandler:
-    def __init__(
-        self,
-        user_id="Alice_Python",
-        port=5000,
-        public_key_bytes=None,
-        service_type="_cisc468secshare._tcp.local.",
-    ):
+class MDNSHandler(ServiceListener):
+    def __init__(self, user_id: str, port: int, service_type: str = "_cisc468secshare._tcp.local."):
         self.user_id = user_id
         self.port = port
         self.service_type = service_type
-        self.public_key_bytes = public_key_bytes or b""
+        self.zeroconf = Zeroconf()
+        self.peers = {}  # Stores {user_id: {"ip": ip, "port": port}}
 
-        self.zeroconf = Zeroconf(ip_version=IPVersion.V4Only)
-        self.discovered_peers = {}
-        self.browser = None
-        self._my_service_info = None
-        self._lock = threading.Lock()
-
-    def _get_local_ip(self):
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            s.connect(("8.8.8.8", 1))
-            return s.getsockname()[0]
-        except Exception:
-            return "127.0.0.1"
-        finally:
-            s.close()
-
-    def start_discovery(self):
-        local_ip = self._get_local_ip()
-
-        properties = {
-            b"user_id": self.user_id.encode("utf-8"),
-            b"public_key": base64.b64encode(self.public_key_bytes),
-        }
-
-        self._my_service_info = ServiceInfo(
-            type_=self.service_type,
-            name=f"{self.user_id}.{self.service_type}",
+    def register_service(self):
+        """Broadcasts our presence to the local network."""
+        local_ip = socket.gethostbyname(socket.gethostname())
+        
+        info = ServiceInfo(
+            self.service_type,
+            f"{self.user_id}.{self.service_type}",
             addresses=[socket.inet_aton(local_ip)],
             port=self.port,
-            properties=properties,
+            properties={"user_id": self.user_id},
+            server=f"{self.user_id}.local.",
         )
+        
+        logger.info(f"Registering service: {self.user_id} on {local_ip}:{self.port}")
+        self.zeroconf.register_service(info)
 
-        try:
-            self.zeroconf.register_service(self._my_service_info)
-            print(f"[*] mDNS: Broadcasting as '{self.user_id}' on {local_ip}:{self.port}")
-        except Exception as e:
-            print(f"[!] mDNS Registration failed: {e}")
-
+    def start_discovery(self):
+        """Starts browsing for other peers."""
         self.browser = ServiceBrowser(self.zeroconf, self.service_type, self)
 
-    def _decode_property(self, props, key, default=None):
-        value = props.get(key)
-        if value is None:
-            return default
-        if isinstance(value, bytes):
-            try:
-                return value.decode("utf-8")
-            except UnicodeDecodeError:
-                return value
-        return value
+    def update_service(self, zc: Zeroconf, type_: str, name: str) -> None:
+        """Required by ServiceListener interface."""
+        pass
 
-    def add_service(self, zc, type_, name):
-        info = zc.get_service_info(type_, name, timeout=3000)
-        if not info:
-            return
+    def remove_service(self, zc: Zeroconf, type_: str, name: str) -> None:
+        """Handles peers leaving the network."""
+        user_id = name.split('.')[0]
+        if user_id in self.peers:
+            logger.info(f"Peer {user_id} left the network.")
+            del self.peers[user_id]
 
-        raw_id = info.properties.get(b"user_id")
-        if raw_id:
-            peer_id = raw_id.decode("utf-8")
-        else:
-            peer_id = name.split(".")[0]
+    def add_service(self, zc: Zeroconf, type_: str, name: str) -> None:
+        """Handles new peers joining the network."""
+        info = zc.get_service_info(type_, name)
+        if info:
+            peer_user_id = info.properties.get(b'user_id', b'unknown').decode()
+            addresses = [socket.inet_ntoa(addr) for addr in info.addresses]
+            
+            if peer_user_id != self.user_id:
+                self.peers[peer_user_id] = {
+                    "ip": addresses[0],
+                    "port": info.port
+                }
+                logger.info(f"Discovered Peer: {peer_user_id} at {addresses[0]}:{info.port}")
 
-        if peer_id == self.user_id:
-            return
-
-        addresses = info.parsed_addresses()
-        if not addresses:
-            return
-
-        address = addresses[0]
-        public_key_b64 = self._decode_property(info.properties, b"public_key")
-
-        peer_record = {
-            "address": address,
-            "port": info.port,
-            "server_name": name,
-        }
-
-        if public_key_b64:
-            peer_record["public_key"] = public_key_b64
-
-        with self._lock:
-            existing = self.discovered_peers.get(peer_id, {})
-
-            # Preserve an existing public_key if this update is partial
-            if "public_key" not in peer_record and "public_key" in existing:
-                peer_record["public_key"] = existing["public_key"]
-
-            self.discovered_peers[peer_id] = peer_record
-
-        print(f"\n[+] Peer Found: {peer_id} ({address}:{info.port})")
-        print(f"{self.user_id} > ", end="", flush=True)
-
-    def remove_service(self, zc, type_, name):
-        target_id = None
-
-        with self._lock:
-            for pid, pdata in self.discovered_peers.items():
-                if pdata.get("server_name") == name:
-                    target_id = pid
-                    break
-
-            if not target_id:
-                target_id = name.split(".")[0]
-
-            if target_id in self.discovered_peers:
-                self.discovered_peers.pop(target_id, None)
-                print(f"\n[-] Peer Removed: {target_id}")
-                print(f"{self.user_id} > ", end="", flush=True)
-
-    def update_service(self, zc, type_, name):
-        self.add_service(zc, type_, name)
-
-    def get_active_peers(self):
-        with self._lock:
-            return dict(self.discovered_peers)
-
-    def stop_discovery(self):
-        if self.zeroconf:
-            try:
-                self.zeroconf.close()
-                self.zeroconf = None
-                print("[*] mDNS services stopped.")
-            except Exception as e:
-                print(f"[!] mDNS shutdown warning: {e}")
-                
-                # import socket
-# import logging
-# from zeroconf import IPVersion, ServiceInfo, Zeroconf, ServiceBrowser
-
-# # Silence zeroconf internal logging to keep your CLI clean
-# logging.getLogger('zeroconf').setLevel(logging.CRITICAL)
-
-# class MDNSHandler:
-#     def __init__(self, user_id="Alice_Python", port=5000, service_type="_cisc468secshare._tcp.local."):
-#         self.user_id = user_id
-#         self.port = port
-#         self.service_type = service_type
-#         self.zeroconf = Zeroconf(ip_version=IPVersion.V4Only)
-#         self.discovered_peers = {}
-#         self.browser = None
-#         self._my_service_info = None
-
-#     def _get_local_ip(self):
-#         """Simple, clean local IP lookup."""
-#         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-#         try:
-#             # Connect to a non-existent external IP to determine local interface
-#             s.connect(('8.8.8.8', 1))
-#             return s.getsockname()[0]
-#         except Exception:
-#             return '127.0.0.1'
-#         finally:
-#             s.close()
-
-#     def start_discovery(self):
-#         """Registers the service and starts the network browser."""
-#         local_ip = self._get_local_ip()
-
-#         # Registration: name must end with the service_type
-#         # We use user_id as the name prefix
-#         self._my_service_info = ServiceInfo(
-#             type_=self.service_type,
-#             name=f"{self.user_id}.{self.service_type}",
-#             addresses=[socket.inet_aton(local_ip)],
-#             port=self.port,
-#             properties={'user_id': self.user_id}
-#         )
-        
-#         try:
-#             self.zeroconf.register_service(self._my_service_info)
-#             # Use a slightly cleaner print format to match your App's style
-#             print(f"[*] mDNS: Broadcasting as '{self.user_id}' on {local_ip}:{self.port}")
-#         except Exception as e:
-#             print(f"[!] mDNS Registration failed: {e}")
-
-#         # Start browsing for other peers
-#         self.browser = ServiceBrowser(self.zeroconf, self.service_type, self)
-
-#     def add_service(self, zc, type_, name):
-#         """Callback: New peer found on the network."""
-#         # Async fetch of service details
-#         info = zc.get_service_info(type_, name)
-#         if not info:
-#             return
-
-#         # Extract Peer ID - prioritize the 'user_id' property
-#         raw_id = info.properties.get(b'user_id')
-#         if raw_id:
-#             peer_id = raw_id.decode('utf-8')
-#         else:
-#             # Fallback: extract prefix from 'Alice.service.tcp.local.'
-#             peer_id = name.split('.')[0]
-        
-#         # Don't add yourself to the peer list
-#         if peer_id == self.user_id:
-#             return
-
-#         # Extract IP address safely
-#         addresses = info.parsed_addresses()
-#         if addresses:
-#             address = addresses[0]
-#             self.discovered_peers[peer_id] = {
-#                 "address": address,
-#                 "port": info.port,
-#                 "server_name": name # Keep the full mDNS name for removal
-#             }
-#             # Use \r to keep the prompt clean if the user is typing
-#             print(f"\n[+] Peer Found: {peer_id} ({address}:{info.port})")
-#             print(f"{self.user_id} > ", end="", flush=True)
-
-#     def remove_service(self, zc, type_, name):
-#         """Callback: Peer left the network."""
-#         # Find the peer by the server_name since peer_id might differ from name prefix
-#         target_id = None
-#         for pid, pdata in self.discovered_peers.items():
-#             if pdata.get("server_name") == name:
-#                 target_id = pid
-#                 break
-        
-#         # If not found by server_name, try the name prefix
-#         if not target_id:
-#             target_id = name.split('.')[0]
-
-#         if target_id in self.discovered_peers:
-#             self.discovered_peers.pop(target_id, None)
-#             print(f"\n[-] Peer Removed: {target_id}")
-#             print(f"{self.user_id} > ", end="", flush=True)
-
-#     def update_service(self, zc, type_, name):
-#         """Handle potential IP/Port changes of an existing peer."""
-#         self.add_service(zc, type_, name)
-
-#     def get_active_peers(self):
-#         """Returns a snapshot of currently visible peers."""
-#         return self.discovered_peers.copy()
-
-#     def stop_discovery(self):
-#         """Robust shutdown of mDNS services."""
-#         if self.zeroconf:
-#             try:
-#                 # Close() handles unregistering and stopping the browser
-#                 self.zeroconf.close()
-#                 self.zeroconf = None
-#                 print("[*] mDNS services stopped.")
-#             except Exception as e:
-#                 print(f"[!] mDNS shutdown warning: {e}")
+    def stop(self):
+        """Cleanup on shutdown."""
+        self.zeroconf.unregister_all_services()
+        self.zeroconf.close()

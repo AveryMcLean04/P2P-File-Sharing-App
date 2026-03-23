@@ -12,7 +12,6 @@ class NetworkManager:
     def start_server(self):
         self.server_thread = threading.Thread(target=self._listen_loop, daemon=True)
         self.server_thread.start()
-        # Using a print here is fine, but the App's log method is better if accessible
         print(f"[*] Network Listener started on port {self.port}")
 
     def _listen_loop(self):
@@ -40,7 +39,6 @@ class NetworkManager:
             try:
                 chunks = []
                 while True:
-                    # 1MB buffer to handle larger encrypted file chunks
                     chunk = conn.recv(1024 * 1024)
                     if not chunk: break
                     chunks.append(chunk)
@@ -55,7 +53,7 @@ class NetworkManager:
     def send_message(self, ip, port, message_dict):
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(10.0) # Longer timeout for file transfers
+                s.settimeout(10.0)
                 s.connect((ip, port))
                 s.sendall(json.dumps(message_dict).encode('utf-8'))
                 return True

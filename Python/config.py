@@ -22,7 +22,6 @@ class AppConfig:
         data_path = base_path / self.data_dir_name
         shared_path = base_path / self.shared_dir_name
         
-        # Create subdirectories for keys and received files
         (data_path / "keys").mkdir(parents=True, exist_ok=True)
         (data_path / "received").mkdir(parents=True, exist_ok=True)
         shared_path.mkdir(parents=True, exist_ok=True)
