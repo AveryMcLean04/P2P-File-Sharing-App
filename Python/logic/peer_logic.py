@@ -9,132 +9,58 @@ class PeerLogic:
         self.active_transfers = {} # Tracks chunks for incoming/outgoing files
 
     # --- Auth & Key Exchange ---
-    # def process_handshake_init(self, sender, payload, addr):
-    #     # Extracting the exact keys the Java client expects
-    #     ephemeral_key = payload.get("ephemeral_key")
-    #     signature = payload.get("signature")
-        
-    #     self.app.log("security", f"Handshake started with {sender} at {addr}")
-        
-    #     # 1. Look up the peer's actual IP and port from the mDNS registry!
-    #     if sender not in self.app.discovery.peers:
-    #         self.app.log("error", f"Cannot respond to {sender}, no mDNS IP found.")
-    #         return
-
-    #     peer_ip = self.app.discovery.peers[sender]["ip"]
-    #     peer_port = self.app.discovery.peers[sender]["port"]
-        
-    #     # 2. Store the peer in our local logic session tracker
-    #     self.peers[sender] = {
-    #         "addr": addr, 
-    #         "ephemeral_key": ephemeral_key
-    #     }
-
-    #     # 3. Respond with the exact format Java will eventually expect
-    #     response_payload = {
-    #         "ephemeral_key": "LOCAL_EPHEMERAL_BASE64",
-    #         "signature": "LOCAL_SIGNATURE_BASE64"
-    #     }
-        
-    #     # Send the response using the correct IP and Port
-    #     self.app.network.send_message(peer_ip, peer_port, {
-    #         "type": "HANDSHAKE_RESPONSE",
-    #         "sender": self.app.user_id,
-    #         "payload": response_payload
-    #     })
-
-    #     self.app.active_sessions[sender] = {
-    #         "status": "SECURE-SESSION",
-    #         "ephemeral_key": ephemeral_key
-    #     }
-    #     self.app.log("security", f"Handshake completed with {sender}.")
-
-    # def process_handshake_response(self, sender, payload):
-    #     self.app.log("security", f"Handshake completed with {sender}.")
-        
-    #     # 1. Delete the broken UI call
-    #     # self.app.update_peer_list(sender, status="Secure") 
-        
-    #     # 2. Actually register the session in the app's active_sessions dictionary
-    #     self.app.active_sessions[sender] = {
-    #         "status": "Encrypted-Session",
-    #         "ephemeral_key": payload.get("ephemeral_key")
-    #     }
-
     def process_handshake_init(self, sender, payload, addr):
-        """Requirement 8: Process incoming PFS handshake request."""
-        # 1. Extract keys from payload (Base64 -> Bytes)
-        peer_identity_pub = base64.b64decode(payload.get("identity_key"))
-        peer_ephemeral_share = base64.b64decode(payload.get("ephemeral_share"))
+        """Handles incoming handshake from Alice."""
+        peer_ephemeral_bytes = base64.b64decode(payload.get("ephemeral_share"))
         
-        self.app.log("security", f"Handshake started with {sender} at {addr}")
+        # 1. Generate our own local session pair
+        local_priv, local_pub = self.app.auth_manager.generate_ephemeral_pair()
         
-        # 2. Network Lookup (mDNS)
-        if sender not in self.app.discovery.peers:
-            self.app.log("error", f"Cannot respond to {sender}, no mDNS IP found.")
-            return
+        # 2. Derive the key and create the encryptor object
+        session_key = self.app.auth_manager.derive_shared_secret(peer_ephemeral_bytes, local_priv)
+        encryptor = self.app.auth_manager.create_encryptor(session_key)
 
-        peer_ip = self.app.discovery.peers[sender]["ip"]
-        peer_port = self.app.discovery.peers[sender]["port"]
-
-        # 3. Generate our own local ephemeral key for this session
-        local_ephemeral_priv, local_ephemeral_pub = self.app.auth_manager.generate_ephemeral_pair()
-
-        # 4. DERIVE THE SESSION KEY (The Fix)
-        # Use their ephemeral share + our local ephemeral private key
-        shared_secret = self.app.auth_manager.derive_shared_secret(peer_ephemeral_share, local_ephemeral_priv)
-        encryptor = self.app.auth_manager.create_encryptor(shared_secret)
-
-        # 5. Store the actual encryptor object for the CLI to use
+        # 3. CRITICAL: Store in active_sessions for the CLI
         self.app.active_sessions[sender] = {
             "status": "SECURE-SESSION",
-            "encryptor": encryptor,  # cmd_chat now sees this!
-            "shared_secret": shared_secret,
-            "peer_pubkey": peer_identity_pub
+            "encryptor": encryptor # cmd_chat looks for this!
         }
 
-        # 6. Respond with our ephemeral public key
-        response_payload = {
-            "ephemeral_key": base64.b64encode(local_ephemeral_pub).decode(),
-            "signature": base64.b64encode(self.app.auth_manager.sign(local_ephemeral_pub)).decode()
+        # 4. Respond to Alice
+        response = {
+            "ephemeral_key": base64.b64encode(local_pub).decode(),
+            "signature": base64.b64encode(self.app.auth_manager.sign(local_pub)).decode()
         }
         
-        self.app.network.send_message(peer_ip, peer_port, {
-            "type": "HANDSHAKE_RESPONSE",
-            "sender": self.app.user_id,
-            "payload": response_payload
+        peer = self.app.discovery.peers.get(sender)
+        self.app.network.send_message(peer['ip'], peer['port'], {
+            "type": "HANDSHAKE_RESPONSE", "sender": self.app.user_id, "payload": response
         })
 
-        self.app.log("security", f"Handshake completed with {sender}. Tunnel active.")
-
     def process_handshake_response(self, sender, payload):
-        """Requirement 8: Finalize PFS handshake after peer responds."""
-        # 1. Extract the responder's ephemeral key
-        peer_ephemeral_pub = base64.b64decode(payload.get("ephemeral_key"))
-        
-        # 2. Retrieve our original private ephemeral key 
-        # (Assuming you stored it temporarily during initiate_handshake)
-        local_priv = self.app.auth_manager.get_pending_ephemeral_priv(sender)
-        
+        """Handles the reply when WE started the handshake."""
+        peer_ephemeral_bytes = base64.b64decode(payload.get("ephemeral_key"))
+    
+        # Alice looks for the key she saved in Step 1
+        local_priv = self.app.auth_manager.pending_handshakes.get(sender)
+    
         if not local_priv:
-            self.app.log("error", f"No pending handshake found for {sender}.")
+            self.app.log("error", f"Security Alert: Received handshake response from {sender} but no record of initiating one.")
             return
 
-        # 3. DERIVE THE SESSION KEY (The Fix)
-        shared_secret = self.app.auth_manager.derive_shared_secret(peer_ephemeral_pub, local_priv)
-        encryptor = self.app.auth_manager.create_encryptor(shared_secret)
+        # Finish the math
+        session_key = self.app.auth_manager.derive_shared_secret(peer_ephemeral_bytes, local_priv)
+        encryptor = self.app.auth_manager.create_encryptor(session_key)
 
-        # 4. Register the session in the app's active_sessions dictionary
+        # Now Alice is also SECURE
         self.app.active_sessions[sender] = {
-            "status": "Encrypted-Session",
-            "encryptor": encryptor, # CLI can now send messages!
-            "shared_secret": shared_secret
+            "status": "SECURE-SESSION",
+            "encryptor": encryptor
         }
-
-        # 5. Cleanup the pending key
-        self.app.auth_manager.clear_pending_handshake(sender)
-        
-        self.app.log("security", f"Handshake completed with {sender}. Encrypted tunnel established.")
+    
+        # Clean up the memory
+        del self.app.auth_manager.pending_handshakes[sender]
+        self.app.log("security", f"Secure session with {sender} finalized.")
 
     # --- File Management ---
     def handle_list_request(self, sender):
@@ -177,9 +103,28 @@ class PeerLogic:
 
     # --- Communication ---
     def process_chat_message(self, sender, payload):
-        """Req 7: Display encrypted/decrypted chat."""
-        message = payload.get("text")
-        self.app.display_chat(sender, message)
+        """Requirement 7: Decrypt and display chat message cleanly."""
+        session = self.app.active_sessions.get(sender)
+        if not session or "encryptor" not in session:
+            return
+
+        try:
+            # 1. Decode and Decrypt
+            encrypted_blob = base64.b64decode(payload)
+            decrypted_bytes = session["encryptor"].decrypt(encrypted_blob)
+            
+            if decrypted_bytes:
+                message_text = decrypted_bytes.decode('utf-8')
+                
+                # 2. CLEAN PRINTING LOGIC
+                # \r moves cursor to start, \033[K clears the line
+                print(f"\r\033[K[ {sender} ]: {message_text}")
+                
+                # 3. Restore the prompt so the user knows they can still type
+                print(f"{self.app.user_id} > ", end="", flush=True)
+                
+        except Exception:
+            self.app.log("error", "Failed to decrypt incoming message.")
 
     # --- Internal Helpers ---
     def _finalize_file(self, filename):
@@ -193,28 +138,50 @@ class PeerLogic:
 
     # TEST
     def initiate_handshake(self, target_id):
-        """
-        Requirement 8: Prepare a Perfect Forward Secrecy (PFS) Handshake.
-        Generates ephemeral keys to ensure past sessions remain secure 
-        even if long-term keys are compromised.
-        """
-        # 1. Get our long-term public identity from AuthManager
-        my_identity_pub = self.app.auth_manager.get_public_key()
-        
-        # 2. Generate an ephemeral (temporary) key for this specific session
-        # This is the 'Forward Secrecy' part.
-        ephemeral_key = self.app.auth_manager.generate_ephemeral_share()
+        """Requirement 8: Prepare PFS Handshake and SAVE the local private key."""
+        # 1. Generate the temporary session pair
+        local_priv, local_pub = self.app.auth_manager.generate_ephemeral_pair()
 
-        # 3. Construct the protocol message
+        # 2. CRITICAL: Save the private key so we can finish the math later
+        # This is what Alice was missing!
+        self.app.auth_manager.pending_handshakes[target_id] = local_priv
+
+        # 3. Get our long-term public identity
+        my_identity_pub = self.app.auth_manager.get_public_key()
+
+        # 4. Construct the protocol message
         return {
             "type": "HANDSHAKE_INIT",
             "sender": self.app.user_id,
             "payload": {
                 "identity_key": base64.b64encode(my_identity_pub).decode(),
-                "ephemeral_share": base64.b64encode(ephemeral_key).decode(),
+                "ephemeral_share": base64.b64encode(local_pub).decode(),
                 "timestamp": self.app.get_timestamp()
             }
         }
+    # def initiate_handshake(self, target_id):
+    #     """
+    #     Requirement 8: Prepare a Perfect Forward Secrecy (PFS) Handshake.
+    #     Generates ephemeral keys to ensure past sessions remain secure 
+    #     even if long-term keys are compromised.
+    #     """
+    #     # 1. Get our long-term public identity from AuthManager
+    #     my_identity_pub = self.app.auth_manager.get_public_key()
+        
+    #     # 2. Generate an ephemeral (temporary) key for this specific session
+    #     # This is the 'Forward Secrecy' part.
+    #     ephemeral_key = self.app.auth_manager.generate_ephemeral_share()
+
+    #     # 3. Construct the protocol message
+    #     return {
+    #         "type": "HANDSHAKE_INIT",
+    #         "sender": self.app.user_id,
+    #         "payload": {
+    #             "identity_key": base64.b64encode(my_identity_pub).decode(),
+    #             "ephemeral_share": base64.b64encode(ephemeral_key).decode(),
+    #             "timestamp": self.app.get_timestamp()
+    #         }
+    #     }
     
     def handle_redundancy_offer(self, sender, payload):
         """Requirement 5: Process a peer's offer to host a file."""

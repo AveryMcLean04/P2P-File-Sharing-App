@@ -68,62 +68,35 @@ class AppCLI:
             print(f"[*] Handshake dispatched to {target}...")
         else:
             print(f"[-] Peer '{target}' not found via mDNS.")
+
     def cmd_chat(self, *args):
         """Encrypts and sends a message (Req 7)."""
         target = args[0] if args else input("Recipient: ").strip()
-        if not target:
-            return print("[-] Error: No recipient provided.")
+        if not target: return
 
         session = self.app.active_sessions.get(target)
         if not session:
-            return print(f"[-] Error: No secure tunnel. Run 'connect {target}' first.")
+            return print(f"[-] Error: No secure tunnel to {target}.")
 
-        encryptor = session.get("encryptor")
-        if encryptor is None:
-            return print(
-                f"[-] Error: Session with '{target}' is not fully established yet "
-                f"(missing encryptor). Reconnect with 'connect {target}'."
-            )
-
-        peer = self.app.discovery.peers.get(target)
-        if not peer:
-            return print(f"[-] Error: Peer '{target}' is no longer available via mDNS.")
-
+        # Use the prompt-style input
         text = input(f"Message for {target}: ").strip()
-        if not text:
-            return
+        if not text: return
 
         try:
+            encryptor = session["encryptor"]
             encrypted_blob = encryptor.encrypt(text.encode())
+            
+            peer = self.app.discovery.peers.get(target)
+            self.app.network.send_message(peer['ip'], peer['port'], {
+                "type": "CHAT_MESSAGE",
+                "sender": self.app.user_id,
+                "payload": base64.b64encode(encrypted_blob).decode()
+            })
+            
+            # Print your own message with a 'Self' tag
+            print(f" (Sent to {target})") 
         except Exception as e:
-            return print(f"[-] Encryption failed: {e}")
-
-        self.app.network.send_message(peer['ip'], peer['port'], {
-            "type": "CHAT_MESSAGE",
-            "sender": self.app.user_id,
-            "payload": base64.b64encode(encrypted_blob).decode()
-        })
-        print(f"[Self -> {target}]: {text}")
-
-    # def cmd_chat(self, *args):
-    #     """Encrypts and sends a message (Req 7)."""
-    #     target = input("Recipient: ").strip()
-    #     if target not in self.app.active_sessions:
-    #         return print(f"[-] Error: No secure tunnel. Run 'connect {target}' first.")
-        
-    #     text = input(f"Message for {target}: ").strip()
-    #     if not text: return
-
-    #     encryptor = self.app.active_sessions[target]["encryptor"]
-    #     encrypted_blob = encryptor.encrypt(text.encode())
-        
-    #     peer = self.app.discovery.peers.get(target)
-    #     self.app.network.send_message(peer['ip'], peer['port'], {
-    #         "type": "CHAT_MESSAGE",
-    #         "sender": self.app.user_id,
-    #         "payload": base64.b64encode(encrypted_blob).decode()
-    #     })
-    #     print(f"[Self -> {target}]: {text}")
+            print(f"[-] Failed to send: {e}")
 
     def cmd_fetch(self, *args):
         """Requirement 4: Request a list of shared files from a peer."""

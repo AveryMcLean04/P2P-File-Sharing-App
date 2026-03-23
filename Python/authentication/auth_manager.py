@@ -4,12 +4,14 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives.asymmetric import x25519, ed25519
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from crypto.encryption import FileEncryptor 
 
 class AuthManager:
     def __init__(self, key_dir="keys"):
         self.key_dir = key_dir
         self.local_encryptor = None
+        self.pending_handshakes = {}
         
     def unlock_vault(self, password: str):
         """
@@ -100,3 +102,35 @@ class AuthManager:
             encoding=serialization.Encoding.Raw,
             format=serialization.PublicFormat.Raw
         )
+
+    def generate_ephemeral_pair(self):
+        """Generates a temporary X25519 pair."""
+        priv = x25519.X25519PrivateKey.generate()
+        pub = priv.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw
+        )
+        return priv, pub
+
+    def derive_shared_secret(self, peer_pub_bytes: bytes, local_priv_obj):
+        """Requirement 8: DH Key Exchange + HKDF for session key."""
+        peer_pub_obj = x25519.X25519PublicKey.from_public_bytes(peer_pub_bytes)
+        raw_secret = local_priv_obj.exchange(peer_pub_obj)
+        
+        # Turn raw DH secret into a 32-byte session key
+        return HKDF(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=None,
+            info=b"p2p-session",
+        ).derive(raw_secret)
+
+    def create_encryptor(self, key: bytes):
+        """Instantiates the FileEncryptor the CLI expects."""
+        return FileEncryptor(key)
+
+    def sign(self, data: bytes) -> bytes:
+        """Signs data using long-term Ed25519 key."""
+        priv_bytes = self.load_identity_securely()
+        priv_key = ed25519.Ed25519PrivateKey.from_private_bytes(priv_bytes)
+        return priv_key.sign(data)
