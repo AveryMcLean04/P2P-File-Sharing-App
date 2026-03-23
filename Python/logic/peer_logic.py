@@ -145,3 +145,19 @@ class PeerLogic:
         """Requirement 5: Process a peer's offer to host a file."""
         filename = payload.get("filename")
         print(f"\n[+] Redundancy Found: {sender} can provide '{filename}'.")
+
+    def handle_peer_left(self, sender, payload=None):
+        # Remove from local session tracker
+        if sender in self.peers:
+            del self.peers[sender]
+
+        # Remove from app session tracker
+        if sender in self.app.active_sessions:
+            del self.app.active_sessions[sender]
+
+        # Remove from discovery registry too, if you keep peers there
+        if hasattr(self.app, "discovery") and hasattr(self.app.discovery, "peers"):
+            if sender in self.app.discovery.peers:
+                del self.app.discovery.peers[sender]
+
+        self.app.log("network", f"{sender} left the network.")

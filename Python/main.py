@@ -77,6 +77,7 @@ class SecureP2PApp:
     def shutdown(self):
         self.log("system", "Shutting down safely...")
         self.discovery.stop()
+        self.network.broadcast_peer_left(self.app.user_id, self.discovery.peers)
         self.network.stop()
         sys.exit(0)
 

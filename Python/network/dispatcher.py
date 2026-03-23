@@ -34,7 +34,8 @@ class MessageDispatcher:
             # --- Communication & Errors (Req 7, 10) ---
             "CHAT_MESSAGE":       lambda: self.logic.process_chat_message(sender, payload),
             "SECURITY_ALERT":     lambda: self.app.display_security_error(sender, payload),
-            "TRANSFER_ERROR":     lambda: self.app.log("error", f"Transfer failed with {sender}: {payload}")
+            "TRANSFER_ERROR":     lambda: self.app.log("error", f"Transfer failed with {sender}: {payload}"),
+            "PEER_LEFT":          lambda: self.logic.handle_peer_left(sender, payload)
         }
 
         if m_type in handlers:
