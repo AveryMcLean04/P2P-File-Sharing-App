@@ -9,57 +9,132 @@ class PeerLogic:
         self.active_transfers = {} # Tracks chunks for incoming/outgoing files
 
     # --- Auth & Key Exchange ---
+    # def process_handshake_init(self, sender, payload, addr):
+    #     # Extracting the exact keys the Java client expects
+    #     ephemeral_key = payload.get("ephemeral_key")
+    #     signature = payload.get("signature")
+        
+    #     self.app.log("security", f"Handshake started with {sender} at {addr}")
+        
+    #     # 1. Look up the peer's actual IP and port from the mDNS registry!
+    #     if sender not in self.app.discovery.peers:
+    #         self.app.log("error", f"Cannot respond to {sender}, no mDNS IP found.")
+    #         return
+
+    #     peer_ip = self.app.discovery.peers[sender]["ip"]
+    #     peer_port = self.app.discovery.peers[sender]["port"]
+        
+    #     # 2. Store the peer in our local logic session tracker
+    #     self.peers[sender] = {
+    #         "addr": addr, 
+    #         "ephemeral_key": ephemeral_key
+    #     }
+
+    #     # 3. Respond with the exact format Java will eventually expect
+    #     response_payload = {
+    #         "ephemeral_key": "LOCAL_EPHEMERAL_BASE64",
+    #         "signature": "LOCAL_SIGNATURE_BASE64"
+    #     }
+        
+    #     # Send the response using the correct IP and Port
+    #     self.app.network.send_message(peer_ip, peer_port, {
+    #         "type": "HANDSHAKE_RESPONSE",
+    #         "sender": self.app.user_id,
+    #         "payload": response_payload
+    #     })
+
+    #     self.app.active_sessions[sender] = {
+    #         "status": "SECURE-SESSION",
+    #         "ephemeral_key": ephemeral_key
+    #     }
+    #     self.app.log("security", f"Handshake completed with {sender}.")
+
+    # def process_handshake_response(self, sender, payload):
+    #     self.app.log("security", f"Handshake completed with {sender}.")
+        
+    #     # 1. Delete the broken UI call
+    #     # self.app.update_peer_list(sender, status="Secure") 
+        
+    #     # 2. Actually register the session in the app's active_sessions dictionary
+    #     self.app.active_sessions[sender] = {
+    #         "status": "Encrypted-Session",
+    #         "ephemeral_key": payload.get("ephemeral_key")
+    #     }
+
     def process_handshake_init(self, sender, payload, addr):
-        # Extracting the exact keys the Java client expects
-        ephemeral_key = payload.get("ephemeral_key")
-        signature = payload.get("signature")
+        """Requirement 8: Process incoming PFS handshake request."""
+        # 1. Extract keys from payload (Base64 -> Bytes)
+        peer_identity_pub = base64.b64decode(payload.get("identity_key"))
+        peer_ephemeral_share = base64.b64decode(payload.get("ephemeral_share"))
         
         self.app.log("security", f"Handshake started with {sender} at {addr}")
         
-        # 1. Look up the peer's actual IP and port from the mDNS registry!
+        # 2. Network Lookup (mDNS)
         if sender not in self.app.discovery.peers:
             self.app.log("error", f"Cannot respond to {sender}, no mDNS IP found.")
             return
 
         peer_ip = self.app.discovery.peers[sender]["ip"]
         peer_port = self.app.discovery.peers[sender]["port"]
-        
-        # 2. Store the peer in our local logic session tracker
-        self.peers[sender] = {
-            "addr": addr, 
-            "ephemeral_key": ephemeral_key
+
+        # 3. Generate our own local ephemeral key for this session
+        local_ephemeral_priv, local_ephemeral_pub = self.app.auth_manager.generate_ephemeral_pair()
+
+        # 4. DERIVE THE SESSION KEY (The Fix)
+        # Use their ephemeral share + our local ephemeral private key
+        shared_secret = self.app.auth_manager.derive_shared_secret(peer_ephemeral_share, local_ephemeral_priv)
+        encryptor = self.app.auth_manager.create_encryptor(shared_secret)
+
+        # 5. Store the actual encryptor object for the CLI to use
+        self.app.active_sessions[sender] = {
+            "status": "SECURE-SESSION",
+            "encryptor": encryptor,  # cmd_chat now sees this!
+            "shared_secret": shared_secret,
+            "peer_pubkey": peer_identity_pub
         }
 
-        # 3. Respond with the exact format Java will eventually expect
+        # 6. Respond with our ephemeral public key
         response_payload = {
-            "ephemeral_key": "LOCAL_EPHEMERAL_BASE64",
-            "signature": "LOCAL_SIGNATURE_BASE64"
+            "ephemeral_key": base64.b64encode(local_ephemeral_pub).decode(),
+            "signature": base64.b64encode(self.app.auth_manager.sign(local_ephemeral_pub)).decode()
         }
         
-        # Send the response using the correct IP and Port
         self.app.network.send_message(peer_ip, peer_port, {
             "type": "HANDSHAKE_RESPONSE",
             "sender": self.app.user_id,
             "payload": response_payload
         })
 
-        self.app.active_sessions[sender] = {
-            "status": "SECURE-SESSION",
-            "ephemeral_key": ephemeral_key
-        }
-        self.app.log("security", f"Handshake completed with {sender}.")
+        self.app.log("security", f"Handshake completed with {sender}. Tunnel active.")
 
     def process_handshake_response(self, sender, payload):
-        self.app.log("security", f"Handshake completed with {sender}.")
+        """Requirement 8: Finalize PFS handshake after peer responds."""
+        # 1. Extract the responder's ephemeral key
+        peer_ephemeral_pub = base64.b64decode(payload.get("ephemeral_key"))
         
-        # 1. Delete the broken UI call
-        # self.app.update_peer_list(sender, status="Secure") 
+        # 2. Retrieve our original private ephemeral key 
+        # (Assuming you stored it temporarily during initiate_handshake)
+        local_priv = self.app.auth_manager.get_pending_ephemeral_priv(sender)
         
-        # 2. Actually register the session in the app's active_sessions dictionary
+        if not local_priv:
+            self.app.log("error", f"No pending handshake found for {sender}.")
+            return
+
+        # 3. DERIVE THE SESSION KEY (The Fix)
+        shared_secret = self.app.auth_manager.derive_shared_secret(peer_ephemeral_pub, local_priv)
+        encryptor = self.app.auth_manager.create_encryptor(shared_secret)
+
+        # 4. Register the session in the app's active_sessions dictionary
         self.app.active_sessions[sender] = {
             "status": "Encrypted-Session",
-            "ephemeral_key": payload.get("ephemeral_key")
+            "encryptor": encryptor, # CLI can now send messages!
+            "shared_secret": shared_secret
         }
+
+        # 5. Cleanup the pending key
+        self.app.auth_manager.clear_pending_handshake(sender)
+        
+        self.app.log("security", f"Handshake completed with {sender}. Encrypted tunnel established.")
 
     # --- File Management ---
     def handle_list_request(self, sender):
