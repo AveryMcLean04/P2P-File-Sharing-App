@@ -98,11 +98,25 @@ class AuthManager:
 
     def get_public_key(self) -> bytes:
         priv_bytes = self.load_identity_securely()
+        # FIX: Check if we actually have bytes before passing to Ed25519
+        if not priv_bytes or len(priv_bytes) != 32:
+            self._log("error", "Cannot retrieve public key: Identity missing or vault locked.")
+            return b"ERROR_NO_KEY"
+            
         priv_key = ed25519.Ed25519PrivateKey.from_private_bytes(priv_bytes)
         return priv_key.public_key().public_bytes(
             encoding=serialization.Encoding.Raw,
             format=serialization.PublicFormat.Raw
         )
+
+
+    # def get_public_key(self) -> bytes:
+    #     priv_bytes = self.load_identity_securely()
+    #     priv_key = ed25519.Ed25519PrivateKey.from_private_bytes(priv_bytes)
+    #     return priv_key.public_key().public_bytes(
+    #         encoding=serialization.Encoding.Raw,
+    #         format=serialization.PublicFormat.Raw
+    #     )
 
     # --- PFS & Mutual Auth (Req 8) ---
 
