@@ -156,3 +156,7 @@ class AuthManager:
             salt=None,
             info=b"p2p-session",
         ).derive(raw_secret)
+
+    def create_encryptor(self, session_key: bytes) -> FileEncryptor:
+        """Utility to turn a derived key into a usable FileEncryptor."""
+        return FileEncryptor(session_key, app=self.app)
