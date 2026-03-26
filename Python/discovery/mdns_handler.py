@@ -1,5 +1,6 @@
 import socket
 from zeroconf import ServiceInfo, Zeroconf, ServiceBrowser, ServiceListener
+import base64
 
 class MDNSHandler(ServiceListener):
     def __init__(self, app, user_id: str, port: int, service_type: str = "_cisc468secshare._tcp.local."):
@@ -37,7 +38,9 @@ class MDNSHandler(ServiceListener):
             f"{self.user_id}.{self.service_type}",
             addresses=[socket.inet_aton(local_ip)],
             port=self.port,
-            properties={"user_id": self.user_id},
+            properties={
+                "user_id": self.user_id,
+                "public_key": base64.b64encode(self.app.auth_manager.get_public_key()).decode()},
             server=f"{self.user_id}.local.",
         )
         

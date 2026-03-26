@@ -149,6 +149,8 @@ class PeerLogic:
         # 3. Get our long-term public identity
         my_identity_pub = self.app.auth_manager.get_public_key()
 
+        signature = self.app.auth_manager.sign(local_pub)
+
         # 4. Construct the protocol message
         return {
             "type": "HANDSHAKE_INIT",
@@ -156,6 +158,7 @@ class PeerLogic:
             "payload": {
                 "identity_key": base64.b64encode(my_identity_pub).decode(),
                 "ephemeral_share": base64.b64encode(local_pub).decode(),
+                "signature": base64.b64encode(signature).decode(),
                 "timestamp": self.app.get_timestamp()
             }
         }

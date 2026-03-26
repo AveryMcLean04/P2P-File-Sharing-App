@@ -94,6 +94,7 @@ public class PeerDiscovery {
         Scanner scanner = new Scanner(System.in);
         while (true) {
             System.out.print("\n" + myName + " > ");
+            if (!scanner.hasNextLine()) break;
             String input = scanner.nextLine().trim();
             if (input.isEmpty()) continue;
 

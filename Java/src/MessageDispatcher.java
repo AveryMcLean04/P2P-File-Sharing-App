@@ -109,6 +109,8 @@ public class MessageDispatcher {
                     network.removePendingSession(sender);
                     return;
                 }
+            } else {
+                System.out.println("[!] WARNING: Identity not verified for " + sender + " (no public key in mDNS) — connection established but unauthenticated.");
             }
 
             pendingSession.deriveSharedSecret(peerEphemeral);
