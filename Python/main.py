@@ -1,7 +1,7 @@
 import os
 import sys
 import time
-import getpass  # For secure password input
+import getpass
 from pathlib import Path
 
 # Path setup for internal modules
@@ -21,28 +21,22 @@ except ImportError as e:
     sys.exit(1)
 
 class SecureP2PApp:
-    def __init__(self, user_id="Alice_Python", port=5000):
+    def __init__(self, user_id="Alice", port=5000):
 
-        # 1. Configuration & Storage Initialization
         self.user_id = user_id
         self.config = AppConfig(user_id=user_id, port=port)
         self.base_path = Path(__file__).resolve().parent
-        self.data_path, self.vault_path = self.config.initialize_directories(self.base_path)
+        self.data_path, self.shared_path, self.vault_path = self.config.initialize_directories(self.base_path)
         
-        # 2. Security Setup
         self.auth_manager = AuthManager(app=self, key_dir=str(self.data_path / "keys"))
+        self.disk_store = None 
         
-        # 3. State Management
         self.active_sessions = {}
-        self.global_registry = {}
-
-        # --- DELAYED INITIALIZATION ---
-        self.disk_store = None
-        self.logic = None
-        self.dispatcher = None
-        self.network = None
-        self.discovery = None
-        self.cli = None
+        self.logic = PeerLogic(self)
+        self.dispatcher = MessageDispatcher(self, self.logic)
+        self.network = NetworkManager(self, port, self.dispatcher.handle)
+        self.discovery = MDNSHandler(self, user_id=self.user_id, port=port)
+        self.cli = AppCLI(self)
 
     def login(self, max_retries=3):
         self.log("security", f"Vault access required for {self.user_id}")
@@ -62,17 +56,21 @@ class SecureP2PApp:
         return False
 
     def post_login_init(self):
-        """Initialize components that require an unlocked vault."""
+        """
+        Initializes components that require an unlocked vault and 
+        loads the long-term identity.
+        """
         self.disk_store = SecureDiskStore(
             vault_dir=str(self.vault_path), 
-            encryptor=self.auth_manager.local_encryptor, 
+            encryptor=self.auth_manager.local_encryptor,
             app=self
         )
-        self.logic = PeerLogic(self)
-        self.dispatcher = MessageDispatcher(self, self.logic)
-        self.network = NetworkManager(self, self.config.port, self.dispatcher.handle)
-        self.discovery = MDNSHandler(self, user_id=self.user_id, port=self.config.port)
-        self.cli = AppCLI(self)
+
+        id_pub = self.auth_manager.get_public_key()
+        if id_pub == b"ERROR_KEY":
+            self.log("error", "Failed to load identity key after vault unlock.")
+        else:
+            self.log("system", "Identity key loaded successfully.")
 
     def log(self, category, message, end="\n"):
         """Standardized logging for the UI."""
@@ -93,10 +91,9 @@ class SecureP2PApp:
         sys.exit(0)
 
 # --- MAIN EXECUTION BLOCK ---
-
 if __name__ == "__main__":
 
-    u_id = sys.argv[1] if len(sys.argv) > 1 else "Alice_Python"
+    u_id = sys.argv[1] if len(sys.argv) > 1 else "Alice"
     u_port = int(sys.argv[2]) if len(sys.argv) > 2 else 5000
     
     app = SecureP2PApp(user_id=u_id, port=u_port)

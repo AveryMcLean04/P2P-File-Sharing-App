@@ -134,6 +134,25 @@ class AuthManager:
             format=serialization.PublicFormat.Raw
         )
 
+    def migrate_identity(self):
+        """
+        Requirement 6: Rotate long-term identity.
+        Returns (old_pub, new_pub, migration_signature)
+        """
+        old_priv_bytes = self.load_identity_securely()
+        old_priv = ed25519.Ed25519PrivateKey.from_private_bytes(old_priv_bytes)
+        old_pub_bytes = old_priv.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw
+        )
+
+        new_priv_bytes, new_pub_bytes = self.generate_new_identity()
+        migration_sig = old_priv.sign(new_pub_bytes)
+        self.save_identity_securely(new_priv_bytes)
+        
+        self._log("security", "Identity migrated. Old key invalidated.")
+        return old_pub_bytes, new_pub_bytes, migration_sig
+
     # --- PFS & Mutual Auth (Req 8) ---
 
     def generate_ephemeral_pair(self):

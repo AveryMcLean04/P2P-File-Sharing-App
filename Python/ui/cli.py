@@ -19,7 +19,7 @@ class AppCLI:
             "fetch":   {"func": self.cmd_fetch,      "desc": "Request a list of shared files (Req 4)"},
             "send":    {"func": self.cmd_send,       "desc": "Propose a file transfer (Req 3)"},
             "find":    {"func": self.cmd_find,       "desc": "Search for redundant copies of a file (Req 5)"},
-            "rotate":  {"func": self.cmd_rotate,     "desc": "Rotate identity keys (Req 6)"},
+            "migrate": {"func": self.cmd_migrate,    "desc": "Migrate identity keys (Req 6)"},
             "exit":    {"func": self.app.shutdown,   "desc": "Safely shut down the application"}
         }
 
@@ -94,21 +94,9 @@ class AppCLI:
             self.app.log("error", f"Failed to send: {e}")
 
     def cmd_fetch(self, *args):
-        target = args[0] if args else input("Fetch file list from (UserID): ").strip()
-        peer = self.app.discovery.peers.get(target)
+        target = args[0] if args else input("Fetch from (UserID): ").strip()
         
-        if not peer:
-            return self.app.log("error", f"Peer '{target}' not found.")
-
-        if target not in self.app.active_sessions:
-            return self.app.log("error", f"No secure session with {target}. Run 'connect {target}' first.")
-
-        self.app.network.send_message(peer['ip'], peer['port'], {
-            "type": "FILE_LIST_REQUEST",
-            "sender": self.app.user_id,
-            "payload": {} 
-        })
-        self.app.log("system", f"Requesting file catalog from {target}...")
+        self.app.logic.request_file_list(target)
 
     def cmd_send(self, *args):
         target = input("Recipient: ").strip()
@@ -150,21 +138,27 @@ class AppCLI:
                     }
                 })
 
-    def cmd_rotate(self, *args):
-        confirm = input("Are you sure? This rotates your identity keys (y/n): ")
-        if confirm.lower() != 'y': return
-
-        new_priv, new_pub = self.app.auth_manager.generate_new_identity()
-        self.app.auth_manager.save_identity_securely(new_priv)
+    def cmd_migrate(self):
+        """Alice triggers this to tell everyone she has a new identity."""
+        old_pub, new_pub, sig = self.app.auth_manager.migrate_identity()
         
-        payload = {"new_pubkey": base64.b64encode(new_pub).decode()}
-        for name in self.app.active_sessions:
-            peer = self.app.discovery.peers.get(name)
+        payload = {
+            "old_identity": base64.b64encode(old_pub).decode(),
+            "new_identity": base64.b64encode(new_pub).decode(),
+            "migration_sig": base64.b64encode(sig).decode()
+        }
+
+        # Notify all active sessions
+        for peer_id in list(self.app.active_sessions.keys()):
+            peer = self.app.discovery.peers.get(peer_id)
             if peer:
                 self.app.network.send_message(peer['ip'], peer['port'], {
-                    "type": "KEY_MIGRATION", "sender": self.app.user_id, "payload": payload
+                    "type": "KEY_MIGRATION_NOTIFY", 
+                    "sender": self.app.user_id, 
+                    "payload": payload
                 })
-        self.app.log("security", "Identity rotated and peers notified.")
+        
+        self.app.log("security", "Migration broadcast sent to all active peers.")
 
     def run_loop(self):
         self.print_banner()

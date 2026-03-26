@@ -24,6 +24,16 @@ class SecureDiskStore:
         else:
             print(f"[{category.upper()}] {message}")
 
+    def list_shared_files(self):
+        """Requirement: Returns a list of files in the shared directory."""
+        # Use the shared_path established in AppConfig
+        shared_path = self.app.shared_path 
+        if not shared_path.exists():
+            return []
+        
+        # Filter out hidden files (like .DS_Store or .git)
+        return [f.name for f in shared_path.iterdir() if f.is_file() and not f.name.startswith(".")]
+
     def save_file(self, filename: str, content: bytes) -> str:
         """Requirement 3 & 9: Encrypts and saves a file to the vault."""
         try:

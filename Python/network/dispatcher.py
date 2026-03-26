@@ -21,7 +21,7 @@ class MessageDispatcher:
 
             # --- File Management (Req 3, 4, 5) ---
             "FILE_LIST_REQUEST":  lambda: self.logic.handle_list_request(sender),
-            "FILE_LIST_RESPONSE": lambda: self.logic.process_list_response(sender, payload),
+            "FILE_LIST_RESPONSE": lambda: self.logic.process_file_list_response(sender, payload),
             "TRANSFER_REQUEST":   lambda: self.logic.handle_transfer_request(sender, payload),
             "TRANSFER_ACCEPT":    lambda: self.logic.handle_transfer_accept(sender, payload),
             "TRANSFER_REJECT":    lambda: self.app.log("transfer", f"{sender} denied the file transfer."),
@@ -42,7 +42,6 @@ class MessageDispatcher:
             try:
                 handlers[m_type]()
             except Exception as e:
-                # Requirement 10: Inform the user of processing failures
                 self.app.log("error", f"Protocol error processing {m_type} from {sender}: {e}")
         else:
             self.app.log("network", f"Unknown message type: {m_type}")

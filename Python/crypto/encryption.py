@@ -4,9 +4,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.exceptions import InvalidTag
 
 class FileEncryptor:
-    # AES-GCM standard nonce size is 12 bytes
     NONCE_SIZE = 12
-    # GCM tag is 16 bytes (appended to ciphertext by cryptography library)
     TAG_SIZE = 16
 
     def __init__(self, key: bytes, app=None):
@@ -24,9 +22,6 @@ class FileEncryptor:
         """Internal helper to use app.log if available."""
         if self.app:
             self.app.log(category, message)
-        else:
-            # Fallback for standalone usage
-            print(f"[{category.upper()}] {message}")
 
     def encrypt(self, plaintext: bytes, associated_data: Optional[bytes] = None) -> bytes:
         """
@@ -54,7 +49,6 @@ class FileEncryptor:
         try:
             return self.aes_gcm.decrypt(nonce, ciphertext_with_tag, associated_data)
         except InvalidTag:
-            # Crucial for password check feedback
             self._log("security", "Auth Failure: Invalid key or tampered data.")
             return None
         except Exception as e:
