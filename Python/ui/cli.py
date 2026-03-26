@@ -6,7 +6,7 @@ class AppCLI:
     def __init__(self, app):
         """
         The 'Face' of the application. 
-        Integrates with AuthManager, SecureDiskStore, and mDNSHandler.
+        Uses app.log for all status updates to maintain UI consistency.
         """
         self.app = app
         
@@ -26,7 +26,7 @@ class AppCLI:
     def print_banner(self):
         banner = f" SECURE P2P: {self.app.user_id} "
         print(f"\n{'='*50}\n{banner:^50}\n{'='*50}")
-        print("[*] Vault Unlocked. System Ready.")
+        self.app.log("system", "Vault Unlocked. System Ready.")
 
     def show_help(self, *args):
         print(f"\n{'COMMAND':<12} | {'DESCRIPTION'}")
@@ -37,10 +37,9 @@ class AppCLI:
     # --- COMMANDS ---
 
     def cmd_list(self, *args):
-        """Displays peers found by mDNSHandler."""
         peers = self.app.discovery.peers
         if not peers:
-            return print("[-] No active peers found on local network.")
+            return self.app.log("system", "No active peers found on local network.")
         
         print(f"\n--- Discovered Peers ({len(peers)}) ---")
         for name, info in peers.items():
@@ -48,37 +47,34 @@ class AppCLI:
             print(f" > {name:<15} [{info['ip']}:{info['port']}] Status: {status}")
 
     def cmd_vault(self, *args):
-        """Requirement 9: List files secured by SecureDiskStore."""
         files = self.app.disk_store.list_encrypted_files()
         if not files:
-            print("[!] No files in secure storage.")
+            self.app.log("system", "No files in secure storage.")
         else:
             print(f"\n--- Encrypted Vault Contents ---")
             for f in files:
-                print(f" [LOCKED] {f}")
+                # Using system log for consistent prefixing
+                self.app.log("security", f"LOCKED: {f}")
 
     def cmd_connect(self, *args):
-        """Initiates Perfect Forward Secrecy Handshake (Req 8)."""
         target = args[0] if args else input("Connect to (UserID): ").strip()
         peer = self.app.discovery.peers.get(target)
         
         if peer:
             msg = self.app.logic.initiate_handshake(target)
-            self.app.network.send_message(peer['ip'], peer['port'], msg)
-            print(f"[*] Handshake dispatched to {target}...")
+            if self.app.network.send_message(peer['ip'], peer['port'], msg):
+                self.app.log("security", f"Handshake dispatched to {target}...")
         else:
-            print(f"[-] Peer '{target}' not found via mDNS.")
+            self.app.log("error", f"Peer '{target}' not found via mDNS.")
 
     def cmd_chat(self, *args):
-        """Encrypts and sends a message (Req 7)."""
         target = args[0] if args else input("Recipient: ").strip()
         if not target: return
 
         session = self.app.active_sessions.get(target)
         if not session:
-            return print(f"[-] Error: No secure tunnel to {target}.")
+            return self.app.log("error", f"No secure tunnel to {target}.")
 
-        # Use the prompt-style input
         text = input(f"Message for {target}: ").strip()
         if not text: return
 
@@ -87,49 +83,42 @@ class AppCLI:
             encrypted_blob = encryptor.encrypt(text.encode())
             
             peer = self.app.discovery.peers.get(target)
-            self.app.network.send_message(peer['ip'], peer['port'], {
+            success = self.app.network.send_message(peer['ip'], peer['port'], {
                 "type": "CHAT_MESSAGE",
                 "sender": self.app.user_id,
                 "payload": base64.b64encode(encrypted_blob).decode()
             })
-            
-            # Print your own message with a 'Self' tag
-            print(f" (Sent to {target})") 
+            if success:
+                self.app.log("system", f"Message sent to {target}.")
         except Exception as e:
-            print(f"[-] Failed to send: {e}")
+            self.app.log("error", f"Failed to send: {e}")
 
     def cmd_fetch(self, *args):
-        """Requirement 4: Request a list of shared files from a peer."""
         target = args[0] if args else input("Fetch file list from (UserID): ").strip()
-        
-        # 1. Check if peer exists in discovery
         peer = self.app.discovery.peers.get(target)
+        
         if not peer:
-            return print(f"[-] Peer '{target}' not found via mDNS.")
+            return self.app.log("error", f"Peer '{target}' not found.")
 
-        # 2. Ensure a secure session exists (Req 8)
         if target not in self.app.active_sessions:
-            return print(f"[-] Error: No secure session with {target}. Run 'connect {target}' first.")
+            return self.app.log("error", f"No secure session with {target}. Run 'connect {target}' first.")
 
-        # 3. Dispatch the request
         self.app.network.send_message(peer['ip'], peer['port'], {
             "type": "FILE_LIST_REQUEST",
             "sender": self.app.user_id,
             "payload": {} 
         })
-        
-        print(f"[*] Requesting file catalog from {target}...")
+        self.app.log("system", f"Requesting file catalog from {target}...")
 
     def cmd_send(self, *args):
-        """Proposes transfer of a file from the secure vault (Req 3)."""
         target = input("Recipient: ").strip()
         filename = input("Vault Filename: ").strip()
         
         if filename not in self.app.disk_store.list_encrypted_files():
-            return print(f"[-] Error: '{filename}' not in vault.")
+            return self.app.log("error", f"'{filename}' not in vault.")
 
         if target not in self.app.active_sessions:
-            return print(f"[-] Error: Establish a secure session first.")
+            return self.app.log("error", "Establish a secure session first.")
 
         peer = self.app.discovery.peers.get(target)
         self.app.network.send_message(peer['ip'], peer['port'], {
@@ -137,19 +126,17 @@ class AppCLI:
             "sender": self.app.user_id,
             "payload": {"filename": filename}
         })
-        print(f"[*] Request sent. Awaiting consent from {target}...")
+        self.app.log("system", f"Request sent. Awaiting consent from {target}...")
 
     def cmd_find(self, *args):
-        """Requirement 5: Search for redundant copies of a file across the network."""
         filename = args[0] if args else input("Search for file (or hash): ").strip()
         if not filename: return
 
         active_targets = list(self.app.active_sessions.keys())
-        
         if not active_targets:
-            return print("[-] No secure sessions active. Cannot perform network search.")
+            return self.app.log("error", "No secure sessions active. Cannot search.")
 
-        print(f"[*] Querying {len(active_targets)} peers for '{filename}'...")
+        self.app.log("system", f"Querying {len(active_targets)} peers for '{filename}'...")
         
         for target in active_targets:
             peer = self.app.discovery.peers.get(target)
@@ -162,16 +149,12 @@ class AppCLI:
                         "query_id": os.urandom(4).hex()
                     }
                 })
-        
-        print("[*] Search broadcasted. Results will appear as peers respond.")
 
     def cmd_rotate(self, *args):
-        """Requirement 6: Rotate identity keys and notify sessions."""
-        confirm = input("Are you sure? This rotates your long-term identity (y/n): ")
+        confirm = input("Are you sure? This rotates your identity keys (y/n): ")
         if confirm.lower() != 'y': return
 
         new_priv, new_pub = self.app.auth_manager.generate_new_identity()
-
         self.app.auth_manager.save_identity_securely(new_priv)
         
         payload = {"new_pubkey": base64.b64encode(new_pub).decode()}
@@ -181,19 +164,24 @@ class AppCLI:
                 self.app.network.send_message(peer['ip'], peer['port'], {
                     "type": "KEY_MIGRATION", "sender": self.app.user_id, "payload": payload
                 })
-        print("[+] Identity rotated and peers notified.")
+        self.app.log("security", "Identity rotated and peers notified.")
 
     def run_loop(self):
         self.print_banner()
         while True:
             try:
-                raw = input(f"\n{self.app.user_id} > ").strip().split()
-                if not raw: continue
-                cmd, args = raw[0].lower(), raw[1:]
+                # The prompt itself stays plain, but logic results use app.log
+                prompt_str = f"\n{self.app.user_id} > "
+                user_input = input(prompt_str).strip().split()
+                
+                if not user_input: continue
+                
+                cmd, args = user_input[0].lower(), user_input[1:]
+                
                 if cmd in self.commands:
                     self.commands[cmd]["func"](*args)
                     if cmd == "exit": break
                 else:
-                    print(f"[-] Unknown command. Type 'help'.")
+                    self.app.log("error", "Unknown command. Type 'help'.")
             except (EOFError, KeyboardInterrupt):
                 self.app.shutdown(); break

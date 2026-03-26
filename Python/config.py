@@ -8,6 +8,7 @@ class AppConfig:
     port: int = 5000
     service_type: str = "_cisc468secshare._tcp.local."
     shared_dir_name: str = "shared_test_files"
+    password: str="test"
     
     @property
     def data_dir_name(self) -> str:
