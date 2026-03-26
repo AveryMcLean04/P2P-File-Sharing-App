@@ -22,6 +22,7 @@ except ImportError as e:
 
 class SecureP2PApp:
     def __init__(self, user_id="Alice_Python", port=5000):
+
         # 1. Configuration & Storage Initialization
         self.user_id = user_id
         self.config = AppConfig(user_id=user_id, port=port)
