@@ -85,22 +85,30 @@ class PeerLogic:
             self.app.log("error", f"Handshake Response Failed: {str(e)}")
 
     def initiate_handshake(self, target_id):
-        """Requirement 8: Construct the signed HANDSHAKE_INIT."""
-        local_priv, local_pub = self.app.auth_manager.generate_ephemeral_pair()
-        self.app.auth_manager.pending_handshakes[target_id] = local_priv
+        try:
+            # Get the key - now guaranteed to be 32 bytes or empty on fail
+            my_id_pub = self.app.auth_manager.get_public_key()
+            
+            if my_id_pub == b"ERROR_NO_KEY" or my_id_pub == b"ERROR_KEY":
+                self.app.log("error", "Handshake aborted: Identity key is missing.")
+                return None
 
-        my_id_pub = self.app.auth_manager.get_public_key()
-        signature = self.app.auth_manager.sign(local_pub)
+            local_priv, local_pub = self.app.auth_manager.generate_ephemeral_pair()
+            self.app.auth_manager.pending_handshakes[target_id] = local_priv
+            signature = self.app.auth_manager.sign(local_pub)
 
-        return {
-            "type": "HANDSHAKE_INIT",
-            "sender": self.app.user_id,
-            "payload": {
-                "identity_key": base64.b64encode(my_id_pub).decode(),
-                "ephemeral_share": base64.b64encode(local_pub).decode(),
-                "signature": base64.b64encode(signature).decode()
+            return {
+                "type": "HANDSHAKE_INIT",
+                "sender": self.app.user_id,
+                "payload": {
+                    "identity_key": base64.b64encode(my_id_pub).decode(),
+                    "ephemeral_share": base64.b64encode(local_pub).decode(),
+                    "signature": base64.b64encode(signature).decode()
+                }
             }
-        }
+        except Exception as e:
+            self.app.log("error", f"Handshake generation failed: {e}")
+            return None
 
     # --- Auth & Key Exchange ---
     # def process_handshake_init(self, sender, payload, addr):

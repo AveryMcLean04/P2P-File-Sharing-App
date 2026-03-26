@@ -84,39 +84,55 @@ class AuthManager:
 
     def load_identity_securely(self) -> bytes:
         path = self.key_dir / "id_encrypted.bin"
+        
+        # 1. If no key exists, generate it
         if not path.exists():
             self._log("system", "No identity found. Generating new keys...")
-            priv_bytes, _ = self.generate_new_identity()
-            self.save_identity_securely(priv_bytes)
-            return priv_bytes
+            return self._generate_and_save_fresh_identity()
 
-        decrypted_key = self.local_encryptor.decrypt(path.read_bytes())
-        if decrypted_key is None:
-            self._log("security", "Integrity failure: Cannot decrypt identity key.")
+        # 2. Attempt to decrypt existing key
+        try:
+            encrypted_data = path.read_bytes()
+            decrypted_key = self.local_encryptor.decrypt(encrypted_data)
+            
+            # CRITICAL CHECK: Validate length before returning
+            if decrypted_key and len(decrypted_key) == 32:
+                return decrypted_key
+            else:
+                raise ValueError("Decrypted key is wrong length or empty.")
+                
+        except Exception as e:
+            self._log("security", f"Vault Integrity Error: {e}")
+            self._log("system", "Attempting to recover by generating a fresh identity...")
+            
+            # Backup the "bad" key so we don't lose it forever, then make a new one
+            backup_path = path.with_suffix(".bak")
+            path.replace(backup_path)
+            
+            return self._generate_and_save_fresh_identity()
+
+    def _generate_and_save_fresh_identity(self) -> bytes:
+        """Internal helper to ensure we always have a valid 32-byte key."""
+        priv_bytes, _ = self.generate_new_identity()
+        if not self.local_encryptor:
+            self._log("error", "Cannot save identity: Vault is locked!")
             return b""
-        return decrypted_key
+            
+        self.save_identity_securely(priv_bytes)
+        return priv_bytes
 
     def get_public_key(self) -> bytes:
         priv_bytes = self.load_identity_securely()
-        # FIX: Check if we actually have bytes before passing to Ed25519
+
         if not priv_bytes or len(priv_bytes) != 32:
-            self._log("error", "Cannot retrieve public key: Identity missing or vault locked.")
-            return b"ERROR_NO_KEY"
+            self._log("error", "Identity key is invalid. Verification failed.")
+            return b"ERROR_KEY"
             
         priv_key = ed25519.Ed25519PrivateKey.from_private_bytes(priv_bytes)
         return priv_key.public_key().public_bytes(
             encoding=serialization.Encoding.Raw,
             format=serialization.PublicFormat.Raw
         )
-
-
-    # def get_public_key(self) -> bytes:
-    #     priv_bytes = self.load_identity_securely()
-    #     priv_key = ed25519.Ed25519PrivateKey.from_private_bytes(priv_bytes)
-    #     return priv_key.public_key().public_bytes(
-    #         encoding=serialization.Encoding.Raw,
-    #         format=serialization.PublicFormat.Raw
-    #     )
 
     # --- PFS & Mutual Auth (Req 8) ---
 

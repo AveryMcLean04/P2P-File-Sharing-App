@@ -29,52 +29,50 @@ class SecureP2PApp:
         self.base_path = Path(__file__).resolve().parent
         self.data_path, self.vault_path = self.config.initialize_directories(self.base_path)
         
-        # 2. Security & Vault Setup (Requirement 9)
-        self.auth_manager = AuthManager(key_dir=str(self.data_path / "keys"))
+        # 2. Security Setup
+        self.auth_manager = AuthManager(app=self, key_dir=str(self.data_path / "keys"))
         
-        # We delay initializing the disk_store until the vault is unlocked
-        self.disk_store = SecureDiskStore(vault_dir=str(self.vault_path), encryptor=self.auth_manager.local_encryptor, app=self)
-
         # 3. State Management
         self.active_sessions = {}
         self.global_registry = {}
 
-        # 4. Networking & Protocol Logic (Bridging occurs after unlock)
-        self.logic = PeerLogic(self)
-        self.dispatcher = MessageDispatcher(self, self.logic)
-        self.network = NetworkManager(self, port, self.dispatcher.handle)
-        self.discovery = MDNSHandler(self, user_id=self.user_id, port=port)   
-        
-        # 5. UI
-        self.cli = AppCLI(self)
+        # --- DELAYED INITIALIZATION ---
+        self.disk_store = None
+        self.logic = None
+        self.dispatcher = None
+        self.network = None
+        self.discovery = None
+        self.cli = None
 
     def login(self, max_retries=3):
-        """
-        Force the user to type the hardcoded password from AppConfig.
-        """
         self.log("security", f"Vault access required for {self.user_id}")
         
         for attempt in range(1, max_retries + 1):
-
             prompt = f"[{attempt}/{max_retries}] Enter Vault Password: "
-            self.log("security", prompt, end="")
-            
-            user_input = getpass.getpass("")
+            user_input = getpass.getpass(prompt)
             
             if user_input == self.config.password:
                 if self.auth_manager.unlock_vault(self.config.password):
-                    self.disk_store = SecureDiskStore(
-                        vault_dir=str(self.vault_path), 
-                        encryptor=self.auth_manager.local_encryptor
-                    )
-                    self.log("system", "Vault unlocked.")
+
+                    self.post_login_init()
+                    self.log("system", "Vault unlocked and Identity loaded.")
                     return True
             else:
-
-                print() 
                 self.log("error", "Incorrect password.")
-        
         return False
+
+    def post_login_init(self):
+        """Initialize components that require an unlocked vault."""
+        self.disk_store = SecureDiskStore(
+            vault_dir=str(self.vault_path), 
+            encryptor=self.auth_manager.local_encryptor, 
+            app=self
+        )
+        self.logic = PeerLogic(self)
+        self.dispatcher = MessageDispatcher(self, self.logic)
+        self.network = NetworkManager(self, self.config.port, self.dispatcher.handle)
+        self.discovery = MDNSHandler(self, user_id=self.user_id, port=self.config.port)
+        self.cli = AppCLI(self)
 
     def log(self, category, message, end="\n"):
         """Standardized logging for the UI."""
