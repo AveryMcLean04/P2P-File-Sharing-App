@@ -64,9 +64,11 @@ public class NetworkManager {
     }
 
     public void sendMessage(String address, int port, String jsonMessage) {
-        try (Socket socket = new Socket(address, port);
-             PrintWriter out = new PrintWriter(socket.getOutputStream(), true)) {
-            out.println(jsonMessage);
+        try (Socket socket = new Socket(address, port)) {
+            byte[] data = (jsonMessage + "\n").getBytes("UTF-8");
+            socket.getOutputStream().write(data);
+            socket.getOutputStream().flush();
+            socket.shutdownOutput(); 
         } catch (IOException e) {
             System.out.println("[-] Send failed to " + address + ":" + port + " — " + e.getMessage());
         }

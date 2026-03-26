@@ -16,7 +16,7 @@ public class PeerDiscovery {
 
     static final String SERVICE_TYPE = "_cisc468secshare._tcp.local.";
 
-    static final Map<String, String[]> activePeers = new HashMap<>();
+    static final Map<String, String[]> activePeers = new ConcurrentHashMap<>();
     // ADDED: tracks pending incoming transfer requests waiting for accept/reject
     static final Map<String, String[]> pendingTransfers = new ConcurrentHashMap<>();
 
@@ -60,8 +60,13 @@ public class PeerDiscovery {
 
         jmdns.addServiceListener(SERVICE_TYPE, new ServiceListener() {
             public void serviceAdded(ServiceEvent event) {
+                // Request info twice with a short delay — helps across machines
                 jmdns.requestServiceInfo(event.getType(), event.getName());
-            }
+                new Thread(() -> {
+                    try { Thread.sleep(1000); } catch (InterruptedException e) {}
+                    jmdns.requestServiceInfo(event.getType(), event.getName());
+                }).start();
+}
             public void serviceResolved(ServiceEvent event) {
                 if (event.getName().startsWith(myName)) return;
                 String address = event.getInfo().getHostAddresses()[0];

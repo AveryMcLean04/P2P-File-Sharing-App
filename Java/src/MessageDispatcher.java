@@ -74,11 +74,12 @@ public class MessageDispatcher {
             }
 
             String response = "{\"type\":\"HANDSHAKE_RESPONSE\"," +
-                              "\"sender\":\"" + myName + "\"," +
-                              "\"payload\":{" +
-                              "\"ephemeral_key\":\""  + Base64.getEncoder().encodeToString(myEphemeral) + "\"," +
-                              "\"signature\":\""      + Base64.getEncoder().encodeToString(mySignature) + "\"" +
-                              "}}";
+                  "\"sender\":\"" + myName + "\"," +
+                  "\"payload\":{" +
+                  "\"ephemeral_key\":\""  + Base64.getEncoder().encodeToString(myEphemeral) + "\"," +
+                  "\"signature\":\""      + Base64.getEncoder().encodeToString(mySignature) + "\"," +
+                  "\"identity_key\":\""   + Base64.getEncoder().encodeToString(identity.getPublicKeyBytes()) + "\"" +
+                  "}}";
 
             network.sendMessage(peerInfo[0], Integer.parseInt(peerInfo[1]), response);
             System.out.println("[+] Handshake complete. Secure session established with " + sender);
