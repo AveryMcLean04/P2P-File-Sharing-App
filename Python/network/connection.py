@@ -13,7 +13,7 @@ class NetworkManager:
     def start_server(self):
         self.server_thread = threading.Thread(target=self._listen_loop, daemon=True)
         self.server_thread.start()
-        self.app.log("system", f"Network Listener started on port {self.port}")
+        self.app.log("network", f"Listener started on port {self.port}")
 
     def _listen_loop(self):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:

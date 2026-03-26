@@ -184,4 +184,4 @@ class AppCLI:
                 else:
                     self.app.log("error", "Unknown command. Type 'help'.")
             except (EOFError, KeyboardInterrupt):
-                self.app.shutdown(); break
+                self.app.shutdown();

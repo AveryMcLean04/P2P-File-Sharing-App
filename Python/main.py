@@ -17,7 +17,7 @@ try:
     from logic.peer_logic import PeerLogic
     from ui.cli import AppCLI
 except ImportError as e:
-    print(f"[-] Critical Error: Missing internal modules. {e}")
+    print(f"[FATAL] Missing internal modules. {e}")
     sys.exit(1)
 
 class SecureP2PApp:
