@@ -94,7 +94,7 @@ class SecureP2PApp:
         sys.exit(0)
 
     def log(self, category, message, end="\n"):
-        print(f"[{category.upper()}] {message}", end=end)
+        print(f"[{category.upper()}] {message}", end=end, flush=True)
 
 # --- MAIN EXECUTION BLOCK ---
 if __name__ == "__main__":

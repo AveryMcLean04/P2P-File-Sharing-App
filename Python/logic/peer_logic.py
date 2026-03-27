@@ -1,6 +1,5 @@
-import os
-import json
 import base64
+import os
 
 class PeerLogic:
     def __init__(self, app):
@@ -8,7 +7,8 @@ class PeerLogic:
         self.peers = {} 
         self.active_transfers = {}
 
-    # --- Auth & Key Exchange ---
+    # --- Auth & Key Exchange (Requirement 2, 8 & Key Migration) ---
+
     def process_handshake_init(self, sender, payload, addr):
         try:
             peer_id_pub = base64.b64decode(payload.get("identity_key"))
@@ -68,7 +68,7 @@ class PeerLogic:
             }
         
             del self.app.auth_manager.pending_handshakes[sender]
-            self.app.log("security", f"Session Secure with {sender}.")
+            self.app.log("security", f"Verified identity of {sender}. Session Secure.")
         except Exception as e:
             self.app.log("error", f"Handshake Response Failed: {e}")
 
@@ -110,9 +110,11 @@ class PeerLogic:
                     msg = self.initiate_handshake(sender)
                     if msg: self.app.network.send_message(peer['ip'], peer['port'], msg)
         except Exception as e:
-            self.app.log("error", f"Rejected malicious migration from {sender}.")
+            self.app.log("error", f"Rejected malicious migration from {sender}: {e}")
+        self.app.log("system", f"{self.app.user_id} > ", end="")
 
-    # --- Communication ---
+    # --- Communication & Discovery ---
+
     def process_chat_message(self, sender, payload):
         try:
             encryptor = self.app.active_sessions[sender]["encryptor"]
@@ -123,13 +125,13 @@ class PeerLogic:
         except Exception:
             self.app.log("error", "Decryption failed.")
 
-    # --- File Discovery ---
     def request_file_list(self, target_id):
         peer = self.app.discovery.peers.get(target_id)
         if peer:
             self.app.network.send_message(peer['ip'], peer['port'], {
                 "type": "FILE_LIST_REQUEST", "sender": self.app.user_id, "payload": {}
             })
+            self.app.log("system", f"Requested file list from {target_id}...")
 
     def handle_list_request(self, sender, payload=None):
         files = self.app.disk_store.list_shared_files()
@@ -141,19 +143,28 @@ class PeerLogic:
 
     def process_file_list_response(self, sender, payload):
         files = payload.get("files", [])
-        self.app.log("system", f"--- Files from {sender} ({len(files)}) ---")
-        for f in files: self.app.log("system", f"  > {f}")
-        self.app.log("system", f"{self.app.user_id} > ", end="")
+        if not files:
+            self.app.log("system", f"{sender} is not sharing any files.")
+        else:
+            self.app.log("system", f"--- Files from {sender} ({len(files)}) ---")
+            for f in files: self.app.log("system", f"  > {f}")
 
-    # --- File Transfer & Consent ---
+    # --- File Transfer & Consent (Requirement 3 & 7) ---
+
+    def initiate_file_request(self, target_id, filename):
+        peer = self.app.discovery.peers.get(target_id)
+        if peer:
+            self.app.network.send_message(peer['ip'], peer['port'], {
+                "type": "TRANSFER_REQUEST", "sender": self.app.user_id, "payload": {"filename": filename}
+            })
+            self.app.log("transfer", f"Sent request to {target_id} for '{filename}'. Waiting for consent...")
+
     def handle_transfer_request(self, sender, payload):
         filename = payload.get("filename")
-        self.app.log("transfer", f"CONSENT REQUIRED: {sender} wants '{filename}'.")
-        self.app.log("transfer", f"Allow? (y/n): ", end="")
+        self.app.log("transfer", f"CONSENT REQUIRED: {sender} wants to download '{filename}'.")
+        choice = input(f"Allow '{filename}' to be sent to {sender}? (y/n): ").strip().lower()
         
-        choice = input().strip().lower()
         peer = self.app.discovery.peers.get(sender)
-        
         if choice == 'y' and peer:
             file_data = self.app.disk_store.get_shared_file_content(filename)
             encryptor = self.app.active_sessions[sender]["encryptor"]
@@ -163,11 +174,12 @@ class PeerLogic:
                     "type": "TRANSFER_ACCEPT", "sender": self.app.user_id,
                     "payload": {"filename": filename, "data": base64.b64encode(encrypted_file).decode()}
                 })
-                self.app.log("transfer", f"File '{filename}' sent.")
+                self.app.log("transfer", f"File '{filename}' sent successfully.")
         elif peer:
             self.app.network.send_message(peer['ip'], peer['port'], {
                 "type": "TRANSFER_REJECT", "sender": self.app.user_id, "payload": {"filename": filename}
             })
+            self.app.log("transfer", "Transfer request denied.")
         self.app.log("system", f"{self.app.user_id} > ", end="")
 
     def handle_transfer_accept(self, sender, payload):
@@ -178,23 +190,24 @@ class PeerLogic:
             if decrypted_data and self.app.disk_store.save_to_vault(filename, decrypted_data):
                 self.app.log("file", f"Received '{filename}' from {sender}. Locked in Vault.")
         except Exception as e:
-            self.app.log("error", f"File processing failed: {e}")
+            self.app.log("error", f"Processing failed: {e}")
         self.app.log("system", f"{self.app.user_id} > ", end="")
 
     def handle_transfer_reject(self, sender, payload):
-        self.app.log("transfer", f"Peer {sender} DENIED request for '{payload.get('filename')}'.")
+        filename = payload.get("filename")
+        self.app.log("transfer", f"Peer {sender} DENIED your request for '{filename}'.")
         self.app.log("system", f"{self.app.user_id} > ", end="")
 
-    # --- Redundancy & Maintenance ---
+    # --- Redundancy & Maintenance (Requirement 5) ---
+
     def handle_redundancy_offer(self, sender, payload):
-        self.app.log("system", f"REDUNDANCY ALERT: {sender} has a backup of '{payload.get('filename')}'.")
+        filename = payload.get("filename")
+        self.app.log("system", f"REDUNDANCY ALERT: {sender} has a backup of '{filename}'.")
         self.app.log("system", f"{self.app.user_id} > ", end="")
 
     def handle_peer_left(self, sender, payload=None):
-        self.peers.pop(sender, None)
         self.app.active_sessions.pop(sender, None)
         if hasattr(self.app, "discovery"):
             self.app.discovery.peers.pop(sender, None)
-        
         self.app.log("network", f"Peer {sender} disconnected.")
         self.app.log("system", f"{self.app.user_id} > ", end="")
