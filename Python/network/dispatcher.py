@@ -12,7 +12,18 @@ class MessageDispatcher:
         sender = message.get("sender")
         payload = message.get("payload")
 
-        # Routing table to PeerLogic methods
+        PUBLIC_TYPES = {
+            "HANDSHAKE_INIT", "HANDSHAKE_RESPONSE", 
+            "KEY_MIGRATION_NOTIFY", "PEER_LEFT"
+        }
+
+        session = self.app.active_sessions.get(sender)
+        is_secure = session and session.get("status") == "SECURE-SESSION"
+
+        if m_type not in PUBLIC_TYPES and not is_secure:
+            self.app.log("security", f"Blocked {m_type} from {sender}: Session required.")
+            return
+
         handlers = {
             # --- Auth & Key Exchange (Req 2, 6, 8) ---
             "HANDSHAKE_INIT":       lambda: self.logic.process_handshake_init(sender, payload, addr),
