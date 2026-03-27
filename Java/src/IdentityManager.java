@@ -32,8 +32,20 @@ import java.util.Arrays;
  */
 public class IdentityManager {
 
-    private static final String PUB_KEY_FILE  = "identity.pub";
-    private static final String PRIV_KEY_FILE = "identity.key";
+    private final String pubKeyFile;
+    private final String privKeyFile;
+
+    public IdentityManager(String username) {
+        //create a directory for the user if it doesn't exist yet
+        java.io.File userDir = new java.io.File("data_" + username);
+        if (!userDir.exists()) {
+            userDir.mkdirs();
+        }
+
+        //set the paths
+        this.pubKeyFile = "data_" + username + "/identity.pub";
+        this.privKeyFile = "data_" + username + "/identity.key";
+    }
 
     // PBKDF2 parameters — tune ITERATIONS for your security/performance tradeoff
     private static final int PBKDF2_ITERATIONS = 200_000;
@@ -66,8 +78,8 @@ public class IdentityManager {
     }
 
     private boolean keyFilesExist() {
-        return Files.exists(Paths.get(PRIV_KEY_FILE)) &&
-               Files.exists(Paths.get(PUB_KEY_FILE));
+        return Files.exists(Paths.get(privKeyFile)) &&
+               Files.exists(Paths.get(pubKeyFile));
     }
 
     // -------------------------------------------------------------------------
@@ -88,10 +100,10 @@ public class IdentityManager {
         this.privateKey = (Ed25519PrivateKeyParameters) keyPair.getPrivate();
         this.publicKey = (Ed25519PublicKeyParameters) keyPair.getPublic();
 
-        Files.write(Paths.get(PUB_KEY_FILE), publicKey.getEncoded());
+        Files.write(Paths.get(pubKeyFile), publicKey.getEncoded());
 
         byte[] encryptedPrivKey = encryptPrivateKey(privateKey.getEncoded(), password);
-        Files.write(Paths.get(PRIV_KEY_FILE), encryptedPrivKey);
+        Files.write(Paths.get(privKeyFile), encryptedPrivKey);
 
         System.out.println("[+] Identity keypair generated and saved.");
         printFingerprint();
@@ -106,11 +118,11 @@ public class IdentityManager {
      */
     private void loadKeys(char[] password) throws Exception {
         // Load public key (just raw bytes, no encryption)
-        byte[] pubKeyBytes = Files.readAllBytes(Paths.get(PUB_KEY_FILE));
+        byte[] pubKeyBytes = Files.readAllBytes(Paths.get(pubKeyFile));
         this.publicKey = new Ed25519PublicKeyParameters(pubKeyBytes, 0);
 
         // Load and decrypt private key
-        byte[] encryptedPrivKey = Files.readAllBytes(Paths.get(PRIV_KEY_FILE));
+        byte[] encryptedPrivKey = Files.readAllBytes(Paths.get(privKeyFile));
         byte[] privKeyBytes = decryptPrivateKey(encryptedPrivKey, password);
         this.privateKey = new Ed25519PrivateKeyParameters(privKeyBytes, 0);
 

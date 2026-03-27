@@ -66,7 +66,7 @@ create output directory (first time only):
     mkdir out
 
 to compile:
-    javac -cp "..\libs\jmdns-3.5.11.jar;..\libs\slf4j-api-1.7.36.jar;..\libs\slf4j-simple-1.7.36.jar;..\libs\bcprov-jdk18on-1.83.jar" -d out src\PeerDiscovery.java src\NetworkManager.java src\SessionManager.java src\IdentityManager.java src\MessageDispatcher.java
+    javac -cp "..\libs\jmdns-3.5.11.jar;..\libs\slf4j-api-1.7.36.jar;..\libs\slf4j-simple-1.7.36.jar;..\libs\bcprov-jdk18on-1.83.jar" -d out src\PeerDiscovery.java src\NetworkManager.java src\SessionManager.java src\IdentityManager.java src\MessageDispatcher.java src\FileManager.java
 
 run:
     .\run.bat Bob_java 5000
