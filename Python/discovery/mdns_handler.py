@@ -20,7 +20,6 @@ class MDNSHandler(ServiceListener):
         """Utility to find the actual local IP address used for networking."""
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
-            # Doesn't even have to be reachable; just triggers interface selection
             s.connect(('8.8.8.8', 1))
             ip = s.getsockname()[0]
         except Exception:

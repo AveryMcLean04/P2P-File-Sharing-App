@@ -57,20 +57,33 @@ class SecureP2PApp:
 
     def post_login_init(self):
         """
-        Initializes components that require an unlocked vault and 
-        loads the long-term identity.
+        Requirement 2 & 9: Initializes components that require an unlocked vault 
+        and verifies the long-term identity for network operations.
         """
-        self.disk_store = SecureDiskStore(
-            vault_dir=str(self.vault_path), 
-            encryptor=self.auth_manager.local_encryptor,
-            app=self
-        )
+        try:
+            self.disk_store = SecureDiskStore(
+                vault_dir=self.vault_path,
+                shared_dir=self.shared_path,
+                encryptor=self.auth_manager.local_encryptor,
+                app=self
+            )
 
-        id_pub = self.auth_manager.get_public_key()
-        if id_pub == b"ERROR_KEY":
-            self.log("error", "Failed to load identity key after vault unlock.")
-        else:
-            self.log("system", "Identity key loaded successfully.")
+            id_pub = self.auth_manager.get_public_key()
+            
+            if id_pub in [b"ERROR_KEY", b"ERROR_NO_KEY"] or not id_pub:
+                self.log("error", "Identity Check Failed: Private key missing or corrupted in vault.")
+                return
+
+            id_fingerprint = id_pub.hex()[:12] + "..."
+            self.log("security", f"Identity Verified: [ID: {id_fingerprint}]")
+            self.log("system", "Secure Disk Store initialized. Vault is now online.")
+
+            if hasattr(self, 'discovery') and self.discovery:
+                self.discovery.start()
+                self.log("network", f"Discovery service started as '{self.user_id}'.")
+
+        except Exception as e:
+            self.log("error", f"Critical failure during post-login initialization: {str(e)}")
 
     def log(self, category, message, end="\n"):
         """Standardized logging for the UI."""

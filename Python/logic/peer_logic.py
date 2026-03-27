@@ -112,11 +112,12 @@ class PeerLogic:
 
     def process_key_migration(self, sender, payload):
         """Bob receives this and updates Alice's identity in his registry."""
-        old_pub = base64.b64decode(payload.get("old_identity"))
-        new_pub = base64.b64decode(payload.get("new_identity"))
-        sig = base64.b64decode(payload.get("migration_sig"))
-
         try:
+            old_pub = base64.b64decode(payload.get("old_identity"))
+            new_pub = base64.b64decode(payload.get("new_identity"))
+            sig = base64.b64decode(payload.get("migration_sig"))
+
+            from cryptography.hazmat.primitives.asymmetric import ed25519
             old_pub_obj = ed25519.Ed25519PublicKey.from_public_bytes(old_pub)
             old_pub_obj.verify(sig, new_pub)
             
@@ -124,11 +125,16 @@ class PeerLogic:
             
             if sender in self.app.active_sessions:
                 self.app.active_sessions[sender]["peer_identity"] = new_pub
-                self.app.log("system", f"Re-calculating secure channel with {sender}...")
-                self.initiate_handshake(sender)
                 
-        except Exception:
-            self.app.log("error", f"REJECTED: Malicious key migration attempt from {sender}!")
+                peer = self.app.discovery.peers.get(sender)
+                if peer:
+                    self.app.log("system", f"Re-establishing secure channel with {sender}...")
+                    handshake_msg = self.initiate_handshake(sender)
+                    if handshake_msg:
+                        self.app.network.send_message(peer['ip'], peer['port'], handshake_msg)
+                
+        except Exception as e:
+            self.app.log("error", f"REJECTED: Malicious migration attempt from {sender}! ({e})")
 
     # --- Communication ---
     def process_chat_message(self, sender, payload):
@@ -153,7 +159,10 @@ class PeerLogic:
         except Exception:
             self.app.log("error", "Failed to decrypt incoming message.")
 
+    # --- Requirement 4: File Discovery ---
+
     def request_file_list(self, target_id):
+        """Asks a peer for their list of shared files."""
         peer = self.app.discovery.peers.get(target_id)
         if not peer:
             self.app.log("error", f"Peer {target_id} not found.")
@@ -167,7 +176,7 @@ class PeerLogic:
         self.app.log("system", f"Requested file list from {target_id}...")
 
     def handle_list_request(self, sender, payload=None):
-        """Replies automatically with shared files (Requirement 4)."""
+        """Requirement 4: Automatically replies with shared files (No consent required)."""
         files = self.app.disk_store.list_shared_files()
         peer = self.app.discovery.peers.get(sender)
         if peer:
@@ -178,28 +187,103 @@ class PeerLogic:
             })
 
     def process_file_list_response(self, sender, payload):
+        """Displays the list of files received from a peer."""
         files = payload.get("files", [])
         if not files:
-            print(f"\n--- {sender} has no shared files ---")
+            self.app.log("system", f"--- {sender} has no shared files ---")
         else:
-            print(f"\n--- Files available from {sender} ({len(files)}) ---")
+            self.app.log("system", f"--- Files available from {sender} ({len(files)}) ---")
             for f in files:
-                print(f"  > {f}")
+                self.app.log("system", f"  > {f}")
         
-        print(f"\n{self.app.user_id} > ", end="", flush=True)
+        # Restore prompt
+        self.app.log("system", f"{self.app.user_id} > ", end="")
 
-    # --- Internal Helpers ---
-    def _finalize_file(self, filename):
-        with open(f"./downloads/{filename}", "wb") as f:
-            for chunk in self.active_transfers[filename]:
-                f.write(chunk)
-        del self.active_transfers[filename]
-        self.app.log("file", f"Successfully downloaded {filename}")
-    
-    def handle_redundancy_offer(self, sender, payload):
-        """Requirement 5: Process a peer's offer to host a file."""
+    # --- Requirement 3 & 7: Transfer & Consent ---
+
+    def handle_transfer_request(self, sender, payload):
+        """
+        Requirement 3: Peer receives a request to SEND a file (Outbound).
+        User must consent before the file is encrypted and sent.
+        """
         filename = payload.get("filename")
-        print(f"\n[+] Redundancy Found: {sender} can provide '{filename}'.")
+        self.app.log("transfer", f"CONSENT REQUIRED: {sender} requested to download '{filename}'.")
+        
+        # Interactive prompt using app.log for prefixing
+        self.app.log("transfer", f"Allow '{filename}' to be sent to {sender}? (y/n): ", end="")
+        choice = input().strip().lower()
+
+        peer = self.app.discovery.peers.get(sender)
+        if choice == 'y' and peer:
+            # 1. Load from shared folder
+            file_data = self.app.disk_store.get_shared_file_content(filename)
+            if not file_data:
+                self.app.log("error", f"File '{filename}' not found or empty.")
+                return
+
+            # 2. Requirement 7: Encrypt for session (Confidentiality/Integrity)
+            session = self.app.active_sessions.get(sender)
+            if not session:
+                self.app.log("error", f"No secure session with {sender}. Aborting.")
+                return
+
+            encrypted_file = session["encryptor"].encrypt(file_data)
+            
+            # 3. Send payload
+            self.app.network.send_message(peer['ip'], peer['port'], {
+                "type": "TRANSFER_ACCEPT",
+                "sender": self.app.user_id,
+                "payload": {
+                    "filename": filename,
+                    "data": base64.b64encode(encrypted_file).decode()
+                }
+            })
+            self.app.log("transfer", f"Successfully sent '{filename}' to {sender}.")
+        else:
+            if peer:
+                self.app.network.send_message(peer['ip'], peer['port'], {
+                    "type": "TRANSFER_REJECT", "sender": self.app.user_id, "payload": {"filename": filename}
+                })
+            self.app.log("transfer", "Transfer request denied.")
+
+    def handle_transfer_accept(self, sender, payload):
+        """
+        Requirement 3 & 7: Process the incoming file (Inbound).
+        This executes after a peer has consented to send us a file.
+        """
+        filename = payload.get("filename")
+        encoded_data = payload.get("data")
+        
+        session = self.app.active_sessions.get(sender)
+        if not session:
+            self.app.log("error", f"Received data from {sender} without an active session.")
+            return
+
+        try:
+            # 1. Decrypt using Session Key (Requirement 7)
+            encrypted_blob = base64.b64decode(encoded_data)
+            decrypted_data = session["encryptor"].decrypt(encrypted_blob)
+
+            if decrypted_data:
+                # 2. Requirement 9: Save to Local Vault using Master Key
+                success = self.app.disk_store.save_to_vault(filename, decrypted_data)
+                if success:
+                    self.app.log("file", f"Received '{filename}' from {sender}. Secured in Vault.")
+                
+                # Restore prompt
+                self.app.log("system", f"{self.app.user_id} > ", end="")
+            else:
+                self.app.log("security", f"Integrity check failed for file from {sender}!")
+        except Exception as e:
+            self.app.log("error", f"File processing failed: {str(e)}")
+
+    # --- Requirement 5: Redundancy ---
+
+    def handle_redundancy_offer(self, sender, payload):
+        """Requirement 5: Notifies user that a redundant copy is available."""
+        filename = payload.get("filename")
+        self.app.log("system", f"REDUNDANCY ALERT: {sender} can provide a backup of '{filename}'.")
+        self.app.log("system", f"{self.app.user_id} > ", end="")
 
     def handle_peer_left(self, sender, payload=None):
         if sender in self.peers:

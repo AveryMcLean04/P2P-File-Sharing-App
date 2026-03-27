@@ -164,7 +164,6 @@ class AppCLI:
         self.print_banner()
         while True:
             try:
-                # The prompt itself stays plain, but logic results use app.log
                 prompt_str = f"\n{self.app.user_id} > "
                 user_input = input(prompt_str).strip().split()
                 
