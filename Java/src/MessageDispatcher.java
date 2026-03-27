@@ -1,15 +1,19 @@
 import java.util.Base64;
+import java.util.List;
+import java.util.ArrayList;
 
 public class MessageDispatcher {
 
     private final NetworkManager network;
     private final IdentityManager identity;
     private final String myName;
+    private final FileManager fileManager;
 
-    public MessageDispatcher(NetworkManager network, IdentityManager identity, String myName) {
+    public MessageDispatcher(NetworkManager network, IdentityManager identity, String myName, FileManager fileManager) {
         this.network  = network;
         this.identity = identity;
         this.myName   = myName;
+        this.fileManager = fileManager;
     }
 
     public void handle(String json) {
@@ -22,10 +26,32 @@ public class MessageDispatcher {
                 case "HANDSHAKE_RESPONSE": handleHandshakeResponse(sender, json); break;
                 case "CHAT_MESSAGE":       handleChatMessage(sender, json);       break;
                 case "FILE_LIST_REQUEST":
-                    System.out.println("[*] FILE_LIST_REQUEST from " + sender + " (not yet implemented)");
+                    // 1. Get the files from the local shared folder
+                    List<String> files = fileManager.listSharedFiles();
+    
+                    // 2. Format them into a JSON array: "file1.txt", "file2.txt"
+                    StringBuilder jsonArray = new StringBuilder("[");
+                    for (int i = 0; i < files.size(); i++) {
+                        jsonArray.append("\"").append(files.get(i)).append("\"");
+                        if (i < files.size() - 1) jsonArray.append(", ");
+                    }
+                    jsonArray.append("]");
+
+                    // 3. Build the response payload
+                    String response = "{\"type\":\"FILE_LIST_RESPONSE\"," +
+                                        "\"sender\":\"" + myName + "\"," +
+                                        "\"payload\":{\"files\":" + jsonArray.toString() + "}}";
+
+                    // 4. Send it back to the peer
+                    String[] peerInfo = PeerDiscovery.activePeers.get(sender);
+                    if (peerInfo != null) {
+                        network.sendMessage(peerInfo[0], Integer.parseInt(peerInfo[1]), response);
+                        System.out.println("[*] Sent file list to " + sender);
+                    }
                     break;
                 case "FILE_LIST_RESPONSE":
-                    System.out.println("[*] FILE_LIST_RESPONSE from " + sender + " (not yet implemented)");
+                    // System.out.println("[*] FILE_LIST_RESPONSE from " + sender + " (not yet implemented)");
+                    handleFileListResponse(sender, json);
                     break;
                 case "TRANSFER_REQUEST":
                     System.out.println("[*] TRANSFER_REQUEST from " + sender + " (not yet implemented)");
@@ -187,5 +213,38 @@ public class MessageDispatcher {
         if (start == -1) throw new RuntimeException("no string payload in JSON");
         start += search.length();
         return json.substring(start, json.indexOf("\"", start));
+    }
+
+    private void handleFileListResponse(String sender, String json) {
+        try {
+            String payload = extractPayload(json);
+
+            //find the JSON array brackets
+            int startBracket = payload.indexOf("[");
+            int endBracket = payload.lastIndexOf("]");
+
+            if (startBracket == -1 || endBracket == -1 || endBracket < startBracket) {
+                System.out.println("[-] Invalid FILE_LIST_RESPONSE from " + sender + ": no valid JSON array");
+                return;
+            }
+
+            String arrayContent = payload.substring(startBracket + 1, endBracket).trim();
+            if (arrayContent.isEmpty()) {
+                System.out.println("[*] " + sender + " has no files available.");
+                return;
+            } else {
+                System.out.println("[*] " + sender + " has the following files:");
+                String[] files = arrayContent.split(",");
+                for (String file : files) {
+                    String fileName = file.replaceAll("[\"\\s]", ""); // remove quotes and whitespace
+                    if (!fileName.isEmpty()) {
+                        System.out.println("    - " + fileName);
+                    }
+                }
+            }
+            System.out.print(myName + " > ");
+        } catch (Exception e) {
+            System.out.println("[-] Failed to process FILE_LIST_RESPONSE from " + sender + ": " + e.getMessage());
+        }
     }
 }

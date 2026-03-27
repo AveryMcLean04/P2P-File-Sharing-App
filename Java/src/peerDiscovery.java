@@ -32,12 +32,13 @@ public class PeerDiscovery {
         Console console = System.console();
         char[] password = console.readPassword("Enter password for this session: ");
 
-        IdentityManager identity = new IdentityManager();
+        String myName = (args.length > 0) ? args[0] : "Bob_java";
+
+        IdentityManager identity = new IdentityManager(myName);
         identity.loadOrGenerate(password);
 
         Arrays.fill(password, '\0');
 
-        String myName = (args.length > 0) ? args[0] : "Bob_java";
 
         System.out.println("Step 1: getting local address...");
         InetAddress localAddress = getLocalNetworkAddress();
@@ -54,7 +55,8 @@ public class PeerDiscovery {
         System.out.println("Registered as: " + myName);
 
         NetworkManager network = new NetworkManager(PORT, identity, myName);
-        MessageDispatcher dispatcher = new MessageDispatcher(network, identity, myName);
+        FileManager fileManager = new FileManager(myName);
+        MessageDispatcher dispatcher = new MessageDispatcher(network, identity, myName, fileManager);
         network.setDispatcher(dispatcher);
         network.startServer();
 
