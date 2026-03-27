@@ -56,17 +56,14 @@ class MDNSHandler(ServiceListener):
 
     def remove_service(self, zc: Zeroconf, type_: str, name: str) -> None:
         """Handles peers leaving the network."""
-        # Extract the user_id from the mDNS name (e.g., "Bob._cisc4...local.")
         peer_id = name.split('.')[0]
         if peer_id in self.peers:
-            self.app.log("system", f"Peer '{peer_id}' left the network.")
             del self.peers[peer_id]
 
     def add_service(self, zc: Zeroconf, type_: str, name: str) -> None:
         """Handles new peers joining the network."""
         info = zc.get_service_info(type_, name)
         if info:
-            # Zeroconf properties are bytes
             peer_user_id = info.properties.get(b'user_id', b'unknown').decode()
             addresses = [socket.inet_ntoa(addr) for addr in info.addresses]
             

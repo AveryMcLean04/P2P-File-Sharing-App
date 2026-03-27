@@ -22,7 +22,6 @@ except ImportError as e:
 
 class SecureP2PApp:
     def __init__(self, user_id="Alice", port=5000):
-
         self.user_id = user_id
         self.config = AppConfig(user_id=user_id, port=port)
         self.base_path = Path(__file__).resolve().parent
@@ -42,24 +41,22 @@ class SecureP2PApp:
         self.log("security", f"Vault access required for {self.user_id}")
         
         for attempt in range(1, max_retries + 1):
-            prompt = f"[{attempt}/{max_retries}] Enter Vault Password: "
-            user_input = getpass.getpass(prompt)
+            user_input = getpass.getpass(f"[{attempt}/{max_retries}] Enter Vault Password: ")
             
             if user_input == self.config.password:
                 if self.auth_manager.unlock_vault(self.config.password):
-
+                    # post_login_init handles the critical component startup
                     self.post_login_init()
-                    self.log("system", "Vault unlocked and Identity loaded.")
                     return True
             else:
                 self.log("error", "Incorrect password.")
         return False
 
     def post_login_init(self):
-        """
-        Requirement 2 & 9: Initializes components that require an unlocked vault 
-        and verifies the long-term identity for network operations.
-        """
+        """Initializes components requiring an unlocked vault."""
+        if self.disk_store: # Avoid double-initialization
+            return
+
         try:
             self.disk_store = SecureDiskStore(
                 vault_dir=self.vault_path,
@@ -69,30 +66,23 @@ class SecureP2PApp:
             )
 
             id_pub = self.auth_manager.get_public_key()
+            if not id_pub or id_pub in [b"ERROR_KEY", b"ERROR_NO_KEY"]:
+                raise Exception("Identity Check Failed: Private key missing or corrupted.")
+
+            self.log("security", f"Identity Verified: [ID: {id_pub.hex()[:12]}...]")
             
-            if id_pub in [b"ERROR_KEY", b"ERROR_NO_KEY"] or not id_pub:
-                self.log("error", "Identity Check Failed: Private key missing or corrupted in vault.")
-                return
-
-            id_fingerprint = id_pub.hex()[:12] + "..."
-            self.log("security", f"Identity Verified: [ID: {id_fingerprint}]")
-            self.log("system", "Secure Disk Store initialized. Vault is now online.")
-
-            if hasattr(self, 'discovery') and self.discovery:
-                self.discovery.start()
-                self.log("network", f"Discovery service started as '{self.user_id}'.")
+            # Start Discovery once identity is verified
+            self.discovery.register_service()
+            self.discovery.start_discovery()
+            self.log("network", f"Discovery service active as '{self.user_id}'.")
 
         except Exception as e:
-            self.log("error", f"Critical failure during post-login initialization: {str(e)}")
-
-    def log(self, category, message, end="\n"):
-        """Standardized logging for the UI."""
-        print(f"[{category.upper()}] {message}", end=end)
+            self.log("error", f"Initialization failure: {str(e)}")
+            raise # Re-raise to catch in the main block
 
     def run(self):
+        """Starts the active network and UI loops."""
         self.log("system", f"Starting Secure P2P as {self.user_id}...")
-        self.discovery.register_service()
-        self.discovery.start_discovery()
         self.network.start_server()
         self.cli.run_loop()
 
@@ -103,9 +93,11 @@ class SecureP2PApp:
         self.network.stop()
         sys.exit(0)
 
+    def log(self, category, message, end="\n"):
+        print(f"[{category.upper()}] {message}", end=end)
+
 # --- MAIN EXECUTION BLOCK ---
 if __name__ == "__main__":
-
     u_id = sys.argv[1] if len(sys.argv) > 1 else "Alice"
     u_port = int(sys.argv[2]) if len(sys.argv) > 2 else 5000
     
