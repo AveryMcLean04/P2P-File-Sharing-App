@@ -18,11 +18,6 @@ class FileEncryptor:
         self.aes_gcm = AESGCM(key)
         self.app = app
 
-    def _log(self, category: str, message: str):
-        """Internal helper to use app.log if available."""
-        if self.app:
-            self.app.log(category, message)
-
     def encrypt(self, plaintext: bytes, associated_data: Optional[bytes] = None) -> bytes:
         """
         Encrypts data and returns: [Nonce (12B)] + [Ciphertext + Tag].
@@ -40,7 +35,7 @@ class FileEncryptor:
         Decrypts the blob. Returns None on failure.
         """
         if len(encrypted_blob) < self.NONCE_SIZE + self.TAG_SIZE:
-            self._log("error", "Decryption failed: Data blob is too short.")
+            self.app.log("error", "Decryption failed: Data blob is too short.")
             return None
 
         nonce = encrypted_blob[:self.NONCE_SIZE]
@@ -49,10 +44,10 @@ class FileEncryptor:
         try:
             return self.aes_gcm.decrypt(nonce, ciphertext_with_tag, associated_data)
         except InvalidTag:
-            self._log("security", "Auth Failure: Invalid key or tampered data.")
+            self.app.log("security", "Auth Failure: Invalid key or tampered data.")
             return None
         except Exception as e:
-            self._log("error", f"Unexpected decryption error: {str(e)}")
+            self.app.log("error", f"Unexpected decryption error: {str(e)}")
             return None
 
     @staticmethod

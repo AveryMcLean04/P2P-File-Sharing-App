@@ -1,5 +1,6 @@
 import base64
 import os
+import hashlib
 
 class PeerLogic:
     def __init__(self, app):
@@ -182,15 +183,102 @@ class PeerLogic:
             self.app.log("transfer", "Transfer request denied.")
         self.app.log("system", f"{self.app.user_id} > ", end="")
 
+    def handle_transfer_request(self, sender, payload):
+        """
+        Processes a request from a peer to download a file.
+        Requires manual user consent, then encrypts, hashes, and signs the file.
+        """
+        filename = payload.get("filename")
+        self.app.log("transfer", f"CONSENT REQUIRED: {sender} wants to download '{filename}'.")
+        
+        choice = input(f"Allow '{filename}' to be sent to {sender}? (y/n): ").strip().lower()
+        
+        peer = self.app.discovery.peers.get(sender)
+        session = self.app.active_sessions.get(sender)
+
+        if choice == 'y' and peer and session:
+            try:
+                file_data = self.app.disk_store.get_shared_file_content(filename)
+                if not file_data:
+                    self.app.log("error", f"File '{filename}' not found in shared folder.")
+                    return
+
+                file_hash = hashlib.sha256(file_data).hexdigest()
+                signature = self.app.auth_manager.sign(file_hash.encode())
+
+                encryptor = session["encryptor"]
+                encrypted_file = encryptor.encrypt(file_data)
+
+                self.app.network.send_message(peer['ip'], peer['port'], {
+                    "type": "TRANSFER_ACCEPT", 
+                    "sender": self.app.user_id,
+                    "payload": {
+                        "filename": filename,
+                        "data": base64.b64encode(encrypted_file).decode(),
+                        "sha256": file_hash,
+                        "signature": base64.b64encode(signature).decode()
+                    }
+                })
+                self.app.log("transfer", f"File '{filename}' sent successfully with integrity guarantee.")
+
+            except Exception as e:
+                self.app.log("error", f"Failed to prepare file transfer: {e}")
+
+        elif peer:
+            self.app.network.send_message(peer['ip'], peer['port'], {
+                "type": "TRANSFER_REJECT", 
+                "sender": self.app.user_id, 
+                "payload": {"filename": filename}
+            })
+            self.app.log("transfer", "Transfer request denied.")
+        
+        else:
+            self.app.log("error", f"Cannot fulfill request: Peer {sender} session is inactive.")
+            
+        self.app.log("system", f"{self.app.user_id} > ", end="")
+
     def handle_transfer_accept(self, sender, payload):
-        filename, encoded_data = payload.get("filename"), payload.get("data")
-        encryptor = self.app.active_sessions[sender]["encryptor"]
+        """
+        Receives an encrypted file, verifies the cryptographic signature (Authenticity), 
+        checks the SHA-256 hash (Integrity), and decrypts it (Confidentiality).
+        """        
+        filename = payload.get("filename")
+        encoded_data = payload.get("data")
+        received_hash = payload.get("sha256")
+        encoded_sig = payload.get("signature")
+        
+        session = self.app.active_sessions.get(sender)
+        if not session:
+            self.app.log("security", f"DENIED: No secure session established with {sender}.")
+            return
+
         try:
-            decrypted_data = encryptor.decrypt(base64.b64decode(encoded_data))
-            if decrypted_data and self.app.disk_store.save_to_vault(filename, decrypted_data):
-                self.app.log("file", f"Received '{filename}' from {sender}. Locked in Vault.")
+            peer_pub_key = session["peer_identity"]
+            signature = base64.b64decode(encoded_sig)
+            
+            if not self.app.auth_manager.verify_signature(peer_pub_key, signature, received_hash.encode()):
+                self.app.log("security", f"CRITICAL: Signature mismatch on '{filename}'! Possible tampering.")
+                return
+
+            encryptor = session["encryptor"]
+            encrypted_blob = base64.b64decode(encoded_data)
+            decrypted_data = encryptor.decrypt(encrypted_blob)
+            
+            if decrypted_data:
+                actual_hash = hashlib.sha256(decrypted_data).hexdigest()
+                
+                if actual_hash != received_hash:
+                    self.app.log("security", f"INTEGRITY FAILURE: SHA-256 mismatch for '{filename}'!")
+                    return
+
+                if self.app.disk_store.save_to_vault(filename, decrypted_data):
+                    self.app.log("file", f"Verified & Received '{filename}' from {sender}. Secured in Vault.")
+            else:
+                self.app.log("security", "GCM Decryption failed: Data blob is invalid or key mismatch.")
+                
         except Exception as e:
-            self.app.log("error", f"Processing failed: {e}")
+            self.app.log("error", f"Processing failed for file transfer: {e}")
+            
         self.app.log("system", f"{self.app.user_id} > ", end="")
 
     def handle_transfer_reject(self, sender, payload):
