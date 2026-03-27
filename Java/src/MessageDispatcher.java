@@ -177,8 +177,13 @@ public class MessageDispatcher {
 
     // ADDED: for when payload is a bare string (e.g. CHAT_MESSAGE)
     static String extractRawPayload(String json) {
-        String search = "\"payload\":\"";
+        // Try with space (Python's json.dumps default) then without (Java's format)
+        String search = "\"payload\": \"";
         int start = json.indexOf(search);
+        if (start == -1) {
+            search = "\"payload\":\"";
+            start = json.indexOf(search);
+        }
         if (start == -1) throw new RuntimeException("no string payload in JSON");
         start += search.length();
         return json.substring(start, json.indexOf("\"", start));
