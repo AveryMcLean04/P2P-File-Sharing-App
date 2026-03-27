@@ -114,8 +114,9 @@ public class PeerDiscovery {
                     System.out.println("-------------------------------------------");
                     System.out.println("list         | List discovered peers");
                     System.out.println("connect      | Handshake with a peer");
-                    System.out.println("chat         | Send encrypted message to a peer");  // ADDED
+                    System.out.println("chat         | Send encrypted message to a peer");
                     System.out.println("fetch        | Request file list from a peer");
+                    System.out.println("request      | Request a file from a peer (not implemented)");
                     System.out.println("exit         | Shut down");
                     break;
 
