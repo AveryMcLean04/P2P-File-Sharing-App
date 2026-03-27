@@ -70,7 +70,7 @@ public class PeerDiscovery {
                 }).start();
 }
             public void serviceResolved(ServiceEvent event) {
-                if (event.getName().startsWith(myName)) return;
+                if (event.getName().equals(myName)) return;
                 String address = event.getInfo().getHostAddresses()[0];
                 int peerPort = event.getInfo().getPort();
 
