@@ -48,6 +48,9 @@ All messages follow this JSON structure:
   "payload": { ... },
   "signature": "Base64_String"
 }
+```
+
+---
 
 # Python client:
 
