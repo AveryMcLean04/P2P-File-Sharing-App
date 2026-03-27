@@ -4,7 +4,6 @@ import time
 import getpass
 from pathlib import Path
 
-# Path setup for internal modules
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 
 try:
@@ -45,7 +44,6 @@ class SecureP2PApp:
             
             if user_input == self.config.password:
                 if self.auth_manager.unlock_vault(self.config.password):
-                    # post_login_init handles the critical component startup
                     self.post_login_init()
                     return True
             else:
@@ -54,7 +52,7 @@ class SecureP2PApp:
 
     def post_login_init(self):
         """Initializes components requiring an unlocked vault."""
-        if self.disk_store: # Avoid double-initialization
+        if self.disk_store:
             return
 
         try:
@@ -71,14 +69,13 @@ class SecureP2PApp:
 
             self.log("security", f"Identity Verified: [ID: {id_pub.hex()[:12]}...]")
             
-            # Start Discovery once identity is verified
             self.discovery.register_service()
             self.discovery.start_discovery()
             self.log("network", f"Discovery service active as '{self.user_id}'.")
 
         except Exception as e:
             self.log("error", f"Initialization failure: {str(e)}")
-            raise # Re-raise to catch in the main block
+            raise
 
     def run(self):
         """Starts the active network and UI loops."""

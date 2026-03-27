@@ -61,10 +61,23 @@ class SecureDiskStore:
     # --- INGESTION & SHARING ---
 
     def ingest_file(self, source_path: str) -> bool:
-        """Encrypts into Vault and places copy in Shared folder."""
+        """
+        Takes a plaintext file, encrypts it into the Vault, 
+        and places a copy in the Shared folder for peers.
+        Handles relative paths from project root.
+        """
         source = Path(source_path)
+
         if not source.exists():
-            self._log("error", f"Ingest failed: {source_path} not found.")
+            project_root = Path(__file__).resolve().parent.parent.parent
+            source = project_root / source_path
+
+        if not source.exists():
+            self._log("error", f"Ingest failed: '{source_path}' not found.")
+            return False
+
+        if source.is_dir():
+            self._log("error", f"'{source.name}' is a directory. Please provide a specific file path.")
             return False
 
         try:
@@ -74,10 +87,13 @@ class SecureDiskStore:
             if self.save_to_vault(filename, content):
                 shared_path = self.shared_dir / filename
                 shared_path.write_bytes(content)
+                
                 self._log("system", f"Successfully ingested '{filename}'. Secured and Shared.")
                 return True
+                
         except Exception as e:
             self._log("error", f"Ingestion process failed: {e}")
+            
         return False
 
     def uningest_file(self, filename: str) -> bool:

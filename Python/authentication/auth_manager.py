@@ -42,7 +42,6 @@ class AuthManager:
             iterations=100000,
         )
         master_key = kdf.derive(password.encode())
-        # Note: We pass self.app to FileEncryptor so it logs to the right place
         potential_encryptor = FileEncryptor(master_key, app=self.app)
 
         if verifier_path.exists():
@@ -52,7 +51,6 @@ class AuthManager:
                 return True
             return False
         else:
-            # First time setup
             verifier_blob = potential_encryptor.encrypt(b"VAULT_UNLOCKED")
             verifier_path.write_bytes(verifier_blob)
             self.local_encryptor = potential_encryptor
@@ -85,17 +83,14 @@ class AuthManager:
     def load_identity_securely(self) -> bytes:
         path = self.key_dir / "id_encrypted.bin"
         
-        # 1. If no key exists, generate it
         if not path.exists():
             self._log("system", "No identity found. Generating new keys...")
             return self._generate_and_save_fresh_identity()
 
-        # 2. Attempt to decrypt existing key
         try:
             encrypted_data = path.read_bytes()
             decrypted_key = self.local_encryptor.decrypt(encrypted_data)
             
-            # CRITICAL CHECK: Validate length before returning
             if decrypted_key and len(decrypted_key) == 32:
                 return decrypted_key
             else:
@@ -105,7 +100,6 @@ class AuthManager:
             self._log("security", f"Vault Integrity Error: {e}")
             self._log("system", "Attempting to recover by generating a fresh identity...")
             
-            # Backup the "bad" key so we don't lose it forever, then make a new one
             backup_path = path.with_suffix(".bak")
             path.replace(backup_path)
             
