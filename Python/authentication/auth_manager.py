@@ -104,7 +104,7 @@ class AuthManager:
             return None
         
         if not path.exists():
-            self.app.log("system", "No identity found. Generating new keys...")
+            self.app.log("security", "No identity found. Generating new keys...")
             return self._generate_and_save_fresh_identity()
 
         try:
@@ -113,7 +113,7 @@ class AuthManager:
                 return decrypted_key
             raise ValueError("Invalid key length.")
         except Exception as e:
-            self.app.log("security", f"Vault Integrity Error: {e}")
+            self.app.log("error", f"Vault Integrity Error: {e}")
             path.replace(path.with_suffix(".bak"))
             return self._generate_and_save_fresh_identity()
 
@@ -195,7 +195,7 @@ class AuthManager:
             pub_key.verify(signature, data)
             return True
         except Exception:
-            self.app.log("security", "Signature verification failed!")
+            self.app.log("error", "Signature verification failed!")
             return False
 
     def derive_shared_secret(self, peer_ephemeral_bytes: bytes, local_priv_obj) -> bytes:

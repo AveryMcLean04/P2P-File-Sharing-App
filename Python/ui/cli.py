@@ -109,7 +109,7 @@ class AppCLI:
         else:
             print(f"\n--- Encrypted Vault ---")
             for f in files: 
-                self.app.log("security", f"LOCKED: {f}")
+                self.app.log("security", f"Locked: {f}")
 
     def cmd_ingest(self, *args):
         """Encrypts a file from the host system into the application vault."""

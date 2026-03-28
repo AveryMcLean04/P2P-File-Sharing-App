@@ -38,7 +38,7 @@ class MDNSHandler(ServiceListener):
             s.connect(('8.8.8.8', 1))
             ip = s.getsockname()[0]
         except Exception as e:
-            self.app.log("system", f"IP Discovery Error: {e}. Defaulting to localhost.")
+            self.app.log("error", f"IP Discovery Error: {e}. Defaulting to localhost.")
             ip = '127.0.0.1'
         finally:
             s.close()
@@ -68,7 +68,7 @@ class MDNSHandler(ServiceListener):
                 server=f"{self.user_id}.local.",
             )
 
-            self.app.log("system", f"Registering mDNS: {self.user_id} at {local_ip}:{self.port}")
+            self.app.log("network", f"Registering mDNS: {self.user_id} at {local_ip}:{self.port}")
             self.zeroconf.register_service(info)
         except Exception as e:
             self.app.log("error", f"mDNS Registration failed: {e}")
@@ -78,7 +78,7 @@ class MDNSHandler(ServiceListener):
         Initializes the ServiceBrowser to listen for other nodes 
         broadcasting the application's service type.
         """
-        self.app.log("system", "Starting mDNS peer discovery...")
+        self.app.log("network", "Starting mDNS peer discovery...")
         self.browser = ServiceBrowser(self.zeroconf, self.service_type, self)
 
     def add_service(self, zc: Zeroconf, type_: str, name: str) -> None:
@@ -106,7 +106,7 @@ class MDNSHandler(ServiceListener):
                 "port": info.port,
                 "public_key": props.get("public_key")
             }
-            self.app.log("system", f"Discovered Peer: {peer_id} at {addresses[0]}:{info.port}")
+            self.app.log("network", f"Discovered Peer: {peer_id} at {addresses[0]}:{info.port}")
 
     def remove_service(self, zc: Zeroconf, type_: str, name: str) -> None:
         """
@@ -114,7 +114,7 @@ class MDNSHandler(ServiceListener):
         """
         peer_id = name.split('.')[0]
         if peer_id in self.peers:
-            self.app.log("system", f"Peer Offline: {peer_id}")
+            self.app.log("network", f"Peer Offline: {peer_id}")
             del self.peers[peer_id]
 
     def update_service(self, zc: Zeroconf, type_: str, name: str) -> None:
@@ -127,7 +127,7 @@ class MDNSHandler(ServiceListener):
         """
         Gracefully shuts down the mDNS listener and unregisters the local service.
         """
-        self.app.log("system", "Stopping mDNS services...")
+        self.app.log("network", "Stopping mDNS services...")
         try:
             if self.browser:
                 self.browser.cancel()

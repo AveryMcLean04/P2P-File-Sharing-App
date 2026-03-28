@@ -104,7 +104,6 @@ class SecureDiskStore:
             
             if vault_path.exists() and shared_path.exists():
                 self.app.log("security", f"File '{filename}' secured in vault.")
-                self.app.log("system", f"Successfully ingested '{filename}'.")
                 return True
             else:
                 self.app.log("error", "Ingest failed: Files were not written to disk.")
@@ -133,7 +132,7 @@ class SecureDiskStore:
             if vault_path.exists(): 
                 vault_path.unlink()
                 
-            self.app.log("system", f"Successfully uningested '{filename}'.")
+            self.app.log("security", f"Successfully uningested '{filename}'.")
 
             if self.app and hasattr(self.app, 'active_sessions'):
                 for peer_id in list(self.app.active_sessions.keys()):
@@ -166,4 +165,4 @@ class SecureDiskStore:
         data = self.load_from_vault(filename)
         if data:
             (self.shared_dir / filename).write_bytes(data)
-            self.app.log("system", f"'{filename}' ready for sharing.")
+            self.app.log("security", f"'{filename}' ready for sharing.")

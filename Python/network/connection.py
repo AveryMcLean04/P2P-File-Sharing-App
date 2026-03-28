@@ -96,7 +96,7 @@ class NetworkManager:
                 s.sendall(json.dumps(message_dict).encode('utf-8'))
                 return True
         except Exception:
-            self.app.log("system", f"Failed to send message to {ip}:{port}")
+            self.app.log("error", f"Failed to send message to {ip}:{port}")
             return False
 
     def broadcast_peer_left(self, sender_id: str, peers: Dict[str, Dict]):

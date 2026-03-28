@@ -61,7 +61,7 @@ class FileEncryptor:
         try:
             return self.aes_gcm.decrypt(nonce, ciphertext_with_tag, associated_data)
         except InvalidTag:
-            self.app.log("security", "Auth Failure: Invalid key or tampered data.")
+            self.app.log("error", "Auth Failure: Invalid key or tampered data.")
             return None
         except Exception as e:
             self.app.log("error", f"Unexpected decryption error: {str(e)}")
