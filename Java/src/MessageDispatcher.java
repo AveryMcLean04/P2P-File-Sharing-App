@@ -1,6 +1,8 @@
 import java.util.Base64;
 import java.util.List;
 import java.util.ArrayList;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 
 public class MessageDispatcher {
 
@@ -50,11 +52,18 @@ public class MessageDispatcher {
                     }
                     break;
                 case "FILE_LIST_RESPONSE":
-                    // System.out.println("[*] FILE_LIST_RESPONSE from " + sender + " (not yet implemented)");
                     handleFileListResponse(sender, json);
                     break;
                 case "TRANSFER_REQUEST":
-                    System.out.println("[*] TRANSFER_REQUEST from " + sender + " (not yet implemented)");
+                    // Alice is asking permission to send (Requirement 3)
+                    String reqPayload = extractPayload(json);
+                    String reqFile = extractField(reqPayload, "filename"); 
+                    System.out.println("\n[!] CONSENT REQUIRED: " + sender + " wants to send you '" + reqFile + "'.");
+                    System.out.print("Accept transfer? (y/n) > ");
+                    PeerDiscovery.pendingTransfers.put(sender, new String[]{reqFile});
+                    break;
+                case "TRANSFER_ACCEPT":
+                    handleTransferAccept(sender, json);
                     break;
                 case "PEER_LEFT":
                     PeerDiscovery.activePeers.remove(sender);
@@ -245,6 +254,46 @@ public class MessageDispatcher {
             System.out.print(myName + " > ");
         } catch (Exception e) {
             System.out.println("[-] Failed to process FILE_LIST_RESPONSE from " + sender + ": " + e.getMessage());
+        }
+    }
+
+    private void handleTransferAccept(String sender, String json) {
+        try {
+            String payload = extractPayload(json);
+            String fileName = extractField(payload, "filename");
+            String encodedData = extractField(payload, "data");
+            String receivedHash = extractField(payload, "sha256");
+            String encodedSig = extractField(payload, "signature");
+
+            SessionManager session = network.getSession(sender);
+            byte[] peerIdentityKey = Base64.getDecoder().decode(PeerDiscovery.activePeers.get(sender)[2]);
+
+            //Verify signature
+            byte[] signature = Base64.getDecoder().decode(encodedSig);
+            if (!identity.verify(peerIdentityKey, receivedHash.getBytes(), signature)) {
+                System.out.println("[-] AUTHENTICATION FAILURE: Signature doesn't match for file transfer from " + sender + " for file " + fileName);
+                return;
+            }
+
+            //decrypt the data
+            byte[] encryptedThing = Base64.getDecoder().decode(encodedData);
+            byte[] decryptedData = session.decrypt(encryptedThing);
+
+            //verify hash
+            String actualHash = org.bouncycastle.util.encoders.Hex.toHexString(
+                java.security.MessageDigest.getInstance("SHA-256").digest(decryptedData)
+            );
+
+            if (!actualHash.equalsIgnoreCase(receivedHash)) {
+                System.out.println("[-] INTEGRITY FAILURE: Hash doesn't match for file transfer from " + sender + " for file " + fileName);
+                return;
+            }
+
+            //save the file to downloads folder
+            Files.write(Paths.get("data_" + myName + "/downloads/" + fileName), decryptedData);
+            System.out.println("[+] Received file '" + fileName + "' from " + sender + " (saved to downloads folder)");
+        } catch (Exception e) {
+            System.out.println("[-] Failed to process TRANSFER_REQUEST from " + sender + ": " + e.getMessage());
         }
     }
 }

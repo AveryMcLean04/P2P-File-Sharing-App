@@ -116,7 +116,7 @@ public class PeerDiscovery {
                     System.out.println("connect      | Handshake with a peer");
                     System.out.println("chat         | Send encrypted message to a peer");
                     System.out.println("fetch        | Request file list from a peer");
-                    System.out.println("request      | Request a file from a peer (not implemented)");
+                    System.out.println("request      | Request a file from a peer");
                     System.out.println("exit         | Shut down");
                     break;
 
@@ -193,6 +193,104 @@ public class PeerDiscovery {
                     jmdns.close();
                     System.exit(0);
                     break;
+
+                case "request":
+                    System.out.print("Request file from: ");
+                    String requestTarget = scanner.nextLine().trim();
+                    if (!activePeers.containsKey(requestTarget)) {
+                        System.out.println("[-] Peer '" + requestTarget + "' not found.");
+                        break;
+                    }
+                    if (!network.hasSession(requestTarget)) {
+                        System.out.println("[-] No secure session with " + requestTarget + ". Run 'connect' first.");
+                        break;
+                    }
+    
+                    System.out.print("Filename to request: ");
+                    String reqFileName = scanner.nextLine().trim();
+    
+                    try {
+                        String[] peer = activePeers.get(requestTarget);
+                        String msg = "{\"type\":\"TRANSFER_REQUEST\",\"sender\":\"" + myName + "\",\"payload\":{\"filename\":\"" + reqFileName + "\"}}";
+                        network.sendMessage(peer[0], Integer.parseInt(peer[1]), msg);
+                        System.out.println("[*] Requested '" + reqFileName + "' from " + requestTarget + ". Waiting for their consent...");
+                    } catch (Exception e) {
+                        System.out.println("[-] Request failed: " + e.getMessage());
+                    }
+                    break;
+                case "y":
+                case "yes": {
+                    if (pendingTransfers.isEmpty()) {
+                        System.out.println("[-] No pending transfers to approve.");
+                        break;
+                    }
+                    // Grab the first pending request from the map
+                    Map.Entry<String, String[]> entry = pendingTransfers.entrySet().iterator().next();
+                    String requester = entry.getKey();
+                    String fileName = entry.getValue()[0];
+                    pendingTransfers.remove(requester);
+
+                    try {
+                        // 1. Read the file from your local shared folder
+                        java.nio.file.Path filePath = java.nio.file.Paths.get("data_" + myName + "/shared/" + fileName);
+                        if (!java.nio.file.Files.exists(filePath)) {
+                            System.out.println("[-] Error: File '" + fileName + "' not found in your shared folder.");
+                            break;
+                        }
+                        byte[] fileData = java.nio.file.Files.readAllBytes(filePath);
+
+                        // 2. Hash the file for integrity (Requirement 5)
+                        byte[] hashBytes = java.security.MessageDigest.getInstance("SHA-256").digest(fileData);
+                        String fileHash = org.bouncycastle.util.encoders.Hex.toHexString(hashBytes);
+
+                        // 3. Sign the hash to prove it came from you (Requirement 2 & 11)
+                        byte[] signature = identity.sign(fileHash.getBytes("UTF-8"));
+
+                        // 4. Encrypt the file using the secure session key (Requirement 7)
+                        SessionManager session = network.getSession(requester);
+                        byte[] encryptedFile = session.encrypt(fileData);
+
+                        // 5. Build and send the TRANSFER_ACCEPT JSON payload
+                        String[] peerInfo = activePeers.get(requester);
+                        if (peerInfo != null) {
+                            String payload = "{" +
+                                "\"filename\":\"" + fileName + "\"," +
+                                "\"data\":\"" + Base64.getEncoder().encodeToString(encryptedFile) + "\"," +
+                                "\"sha256\":\"" + fileHash + "\"," +
+                                "\"signature\":\"" + Base64.getEncoder().encodeToString(signature) + "\"" +
+                            "}";
+                            String msg = "{\"type\":\"TRANSFER_ACCEPT\",\"sender\":\"" + myName + "\",\"payload\":" + payload + "}";
+                            
+                            network.sendMessage(peerInfo[0], Integer.parseInt(peerInfo[1]), msg);
+                            System.out.println("[+] File '" + fileName + "' encrypted and sent to " + requester + "!");
+                        }
+                    } catch (Exception e) {
+                        System.out.println("[-] Failed to send file: " + e.getMessage());
+                    }
+                    break;
+                }
+
+                case "n":
+                case "no": {
+                    if (pendingTransfers.isEmpty()) {
+                        System.out.println("[-] No pending transfers to reject.");
+                        break;
+                    }
+                    Map.Entry<String, String[]> entry = pendingTransfers.entrySet().iterator().next();
+                    String requester = entry.getKey();
+                    String fileName = entry.getValue()[0];
+                    pendingTransfers.remove(requester);
+                    
+                    System.out.println("[-] Rejected transfer of '" + fileName + "' to " + requester);
+                    
+                    // Let the other peer know you said no
+                    String[] peerInfo = activePeers.get(requester);
+                    if (peerInfo != null) {
+                        String msg = "{\"type\":\"TRANSFER_REJECT\",\"sender\":\"" + myName + "\",\"payload\":{\"filename\":\"" + fileName + "\"}}";
+                        network.sendMessage(peerInfo[0], Integer.parseInt(peerInfo[1]), msg);
+                    }
+                    break;
+                }
 
                 default:
                     System.out.println("[-] Unknown command '" + cmd + "'. Type 'help' for options.");
