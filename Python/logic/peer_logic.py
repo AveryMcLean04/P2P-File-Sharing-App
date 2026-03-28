@@ -133,6 +133,29 @@ class PeerLogic:
 
     # --- File Transfer & Consent (Requirement 3 & 7) ---
 
+    def initiate_file_request(self, target_id, filename):
+        """
+        Sends a formal request to a peer to download a specific file.
+        This triggers a 'TRANSFER_REQUEST' on their end.
+        """
+        peer = self.app.discovery.peers.get(target_id)
+        if not peer:
+            self.app.log("error", f"Peer '{target_id}' not found.")
+            return
+
+        message = {
+            "type": "TRANSFER_REQUEST",
+            "sender": self.app.user_id,
+            "payload": {
+                "filename": filename
+            }
+        }
+
+        if self.app.network.send_message(peer['ip'], peer['port'], message):
+            self.app.log("transfer", f"Request for '{filename}' sent to {target_id}. Waiting for approval...")
+        else:
+            self.app.log("error", f"Failed to reach {target_id}.")
+
     def handle_push_proposal(self, sender, payload):
         """Peer is offering to send us a file."""
         filename = payload.get("filename")

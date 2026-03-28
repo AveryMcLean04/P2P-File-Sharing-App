@@ -13,13 +13,13 @@ class AppCLI:
             "vault":    {"func": self.cmd_vault,      "desc": "List locally secured files"},
             "ingest":   {"func": self.cmd_ingest,     "desc": "Encrypt a local file into Vault"},
             "uningest": {"func": self.cmd_uningest,   "desc": "Remove a file from Vault"},
-            "request":  {"func": self.cmd_request, "desc": "Download a file from a peer"},
             "fetch":    {"func": self.cmd_fetch,      "desc": "Request a list of shared files"},
+            "request":  {"func": self.cmd_request,    "desc": "Download a file from a peer"},
             "send":     {"func": self.cmd_send,       "desc": "Propose a file transfer"},
             "find":     {"func": self.cmd_find,       "desc": "Search for redundant file copies"},
             "migrate":  {"func": self.cmd_migrate,    "desc": "Migrate identity keys"},
-            "accept": {"func": self.cmd_accept, "desc": "Accept a pending file transfer"},
-            "deny":   {"func": self.cmd_deny,   "desc": "Deny a pending file transfer"},
+            "accept":   {"func": self.cmd_accept,     "desc": "Accept a pending file transfer"},
+            "deny":     {"func": self.cmd_deny,       "desc": "Deny a pending file transfer"},
             "exit":     {"func": self.app.shutdown,   "desc": "Safely shut down the application"}
         }
 
@@ -100,14 +100,6 @@ class AppCLI:
         if filename and input(f"Confirm delete '{filename}'? (y/n): ").lower() == 'y':
             self.app.disk_store.uningest_file(filename)
 
-    def cmd_request(self, *args):
-        target = args[0] if args else input("Request from: ").strip()
-        filename = args[1] if len(args) > 1 else input("Filename: ").strip()
-        
-        if not target or not filename or not self._require_session(target): return
-        
-        self.app.logic.initiate_file_request(target, filename)
-
     def cmd_fetch(self, *args):
         target = args[0] if args else input("Fetch from (UserID): ").strip()
 
@@ -116,6 +108,14 @@ class AppCLI:
             
         if self._require_session(target):
             self.app.logic.request_file_list(target)
+
+    def cmd_request(self, *args):
+        target = args[0] if args else input("Request from: ").strip()
+        filename = args[1] if len(args) > 1 else input("Filename: ").strip()
+        
+        if not target or not filename or not self._require_session(target): return
+        
+        self.app.logic.initiate_file_request(target, filename)
 
     def cmd_send(self, *args):
         target = args[0] if args else input("Recipient: ").strip()
