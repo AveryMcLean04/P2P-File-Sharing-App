@@ -38,6 +38,8 @@ class MessageDispatcher:
             "TRANSFER_ACCEPT":      lambda: self.logic.handle_transfer_accept(sender, payload),
             "TRANSFER_REJECT":      lambda: self.app.log("transfer", f"{sender} denied the file transfer."),
             "FILE_DATA_PACKET":     lambda: self.logic.process_file_transfer(sender, payload),
+            "FILE_REMOVAL_NOTIFY":  lambda: self.logic.process_file_removal(sender, payload),
+            "TRANSFER_ERROR":       lambda: self.app.log("error", f"Transfer failed with {sender}: {payload}"),
 
             # --- Redundancy & Search (Req 5) ---
             "REDUNDANCY_QUERY":     lambda: self.logic.handle_redundancy_query(sender, payload),

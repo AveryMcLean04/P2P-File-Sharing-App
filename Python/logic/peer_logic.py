@@ -156,43 +156,34 @@ class PeerLogic:
         peer = self.app.discovery.peers.get(target_id)
         if peer:
             self.app.network.send_message(peer['ip'], peer['port'], {
-                "type": "TRANSFER_REQUEST", "sender": self.app.user_id, "payload": {"filename": filename}
+                "type": "TRANSFER_REQUEST", 
+                "sender": self.app.user_id, 
+                "payload": {"filename": filename}
             })
             self.app.log("transfer", f"Sent request to {target_id} for '{filename}'. Waiting for consent...")
-
-    def handle_transfer_request(self, sender, payload):
-        filename = payload.get("filename")
-        self.app.log("transfer", f"CONSENT REQUIRED: {sender} wants to download '{filename}'.")
-        choice = input(f"Allow '{filename}' to be sent to {sender}? (y/n): ").strip().lower()
-        
-        peer = self.app.discovery.peers.get(sender)
-        if choice == 'y' and peer:
-            file_data = self.app.disk_store.get_shared_file_content(filename)
-            encryptor = self.app.active_sessions[sender]["encryptor"]
-            if file_data:
-                encrypted_file = encryptor.encrypt(file_data)
-                self.app.network.send_message(peer['ip'], peer['port'], {
-                    "type": "TRANSFER_ACCEPT", "sender": self.app.user_id,
-                    "payload": {"filename": filename, "data": base64.b64encode(encrypted_file).decode()}
-                })
-                self.app.log("transfer", f"File '{filename}' sent successfully.")
-        elif peer:
-            self.app.network.send_message(peer['ip'], peer['port'], {
-                "type": "TRANSFER_REJECT", "sender": self.app.user_id, "payload": {"filename": filename}
-            })
-            self.app.log("transfer", "Transfer request denied.")
-        self.app.log("system", f"{self.app.user_id} > ", end="")
+        else:
+            self.app.log("error", f"Peer {target_id} not found in discovery.")
 
     def handle_transfer_request(self, sender, payload):
         """
         Processes a request from a peer to download a file.
-        Requires manual user consent, then encrypts, hashes, and signs the file.
         """
         filename = payload.get("filename")
+    
+        if filename not in self.app.disk_store.list_shared_files():
+            self.app.log("error", f"Ghost Request: {sender} asked for '{filename}', but it's missing from Disk.")
+            peer = self.app.discovery.peers.get(sender)
+            if peer:
+                self.app.network.send_message(peer['ip'], peer['port'], {
+                    "type": "TRANSFER_ERROR",
+                    "sender": self.app.user_id,
+                    "payload": f"File '{filename}' is no longer available on this host."
+                })
+            return
+
         self.app.log("transfer", f"CONSENT REQUIRED: {sender} wants to download '{filename}'.")
-        
         choice = input(f"Allow '{filename}' to be sent to {sender}? (y/n): ").strip().lower()
-        
+    
         peer = self.app.discovery.peers.get(sender)
         session = self.app.active_sessions.get(sender)
 
@@ -200,7 +191,7 @@ class PeerLogic:
             try:
                 file_data = self.app.disk_store.get_shared_file_content(filename)
                 if not file_data:
-                    self.app.log("error", f"File '{filename}' not found in shared folder.")
+                    self.app.log("error", f"File '{filename}' read failed (deleted during prompt?).")
                     return
 
                 file_hash = hashlib.sha256(file_data).hexdigest()
@@ -231,22 +222,16 @@ class PeerLogic:
                 "payload": {"filename": filename}
             })
             self.app.log("transfer", "Transfer request denied.")
-        
-        else:
-            self.app.log("error", f"Cannot fulfill request: Peer {sender} session is inactive.")
-            
+    
         self.app.log("system", f"{self.app.user_id} > ", end="")
 
     def handle_transfer_accept(self, sender, payload):
-        """
-        Receives an encrypted file, verifies the cryptographic signature (Authenticity), 
-        checks the SHA-256 hash (Integrity), and decrypts it (Confidentiality).
-        """        
+        """Receives, verifies, and saves the file."""
         filename = payload.get("filename")
         encoded_data = payload.get("data")
         received_hash = payload.get("sha256")
         encoded_sig = payload.get("signature")
-        
+    
         session = self.app.active_sessions.get(sender)
         if not session:
             self.app.log("security", f"DENIED: No secure session established with {sender}.")
@@ -255,7 +240,7 @@ class PeerLogic:
         try:
             peer_pub_key = session["peer_identity"]
             signature = base64.b64decode(encoded_sig)
-            
+        
             if not self.app.auth_manager.verify_signature(peer_pub_key, signature, received_hash.encode()):
                 self.app.log("security", f"CRITICAL: Signature mismatch on '{filename}'! Possible tampering.")
                 return
@@ -263,10 +248,9 @@ class PeerLogic:
             encryptor = session["encryptor"]
             encrypted_blob = base64.b64decode(encoded_data)
             decrypted_data = encryptor.decrypt(encrypted_blob)
-            
+        
             if decrypted_data:
                 actual_hash = hashlib.sha256(decrypted_data).hexdigest()
-                
                 if actual_hash != received_hash:
                     self.app.log("security", f"INTEGRITY FAILURE: SHA-256 mismatch for '{filename}'!")
                     return
@@ -274,23 +258,37 @@ class PeerLogic:
                 if self.app.disk_store.save_to_vault(filename, decrypted_data):
                     self.app.log("file", f"Verified & Received '{filename}' from {sender}. Secured in Vault.")
             else:
-                self.app.log("security", "GCM Decryption failed: Data blob is invalid or key mismatch.")
-                
+                self.app.log("security", "Decryption failed: Key mismatch or corrupted data.")
+            
         except Exception as e:
             self.app.log("error", f"Processing failed for file transfer: {e}")
-            
-        self.app.log("system", f"{self.app.user_id} > ", end="")
-
-    def handle_transfer_reject(self, sender, payload):
-        filename = payload.get("filename")
-        self.app.log("transfer", f"Peer {sender} DENIED your request for '{filename}'.")
+        
         self.app.log("system", f"{self.app.user_id} > ", end="")
 
     # --- Redundancy & Maintenance (Requirement 5) ---
 
-    def handle_redundancy_offer(self, sender, payload):
+    def handle_redundancy_query(self, sender, payload):
+        """
+        FIX: Only offer the file if it physically exists in shared storage.
+        """
         filename = payload.get("filename")
-        self.app.log("system", f"REDUNDANCY ALERT: {sender} has a backup of '{filename}'.")
+        if filename in self.app.disk_store.list_shared_files():
+            peer = self.app.discovery.peers.get(sender)
+            if peer:
+                self.app.network.send_message(peer['ip'], peer['port'], {
+                    "type": "REDUNDANCY_OFFER",
+                    "sender": self.app.user_id,
+                    "payload": {"filename": filename}
+                })
+        else:
+            pass
+
+    def process_file_removal(self, sender, payload):
+        """
+        NEW: Handles notifications that a peer has deleted a file.
+        """
+        filename = payload.get("filename")
+        self.app.log("system", f"Update: Peer {sender} has uningested '{filename}'.")
         self.app.log("system", f"{self.app.user_id} > ", end="")
 
     def handle_peer_left(self, sender, payload=None):

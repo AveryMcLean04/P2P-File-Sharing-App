@@ -84,6 +84,7 @@ class SecureP2PApp:
         self.cli.run_loop()
 
     def shutdown(self):
+        """Close the active network and UI loops."""
         self.log("system", "Shutting down safely...")
         self.discovery.stop()
         self.network.broadcast_peer_left(self.user_id, self.discovery.peers)
@@ -91,6 +92,7 @@ class SecureP2PApp:
         sys.exit(0)
 
     def log(self, category, message, end="\n"):
+        """Log important info."""
         print(f"[{category.upper()}] {message}", end=end, flush=True)
 
 # --- MAIN EXECUTION BLOCK ---

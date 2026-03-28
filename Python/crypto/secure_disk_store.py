@@ -97,16 +97,28 @@ class SecureDiskStore:
         return False
 
     def uningest_file(self, filename: str) -> bool:
-        """Removes from Shared folder and deletes from Vault."""
+        """Removes from Shared folder, deletes from Vault, and notifies peers."""
         try:
             shared_path = self.shared_dir / filename
-            if shared_path.exists(): shared_path.unlink()
+            if shared_path.exists(): 
+                shared_path.unlink()
             
             clean_name = filename.replace(".enc", "")
             vault_path = self.vault_dir / f"{clean_name}.enc"
-            if vault_path.exists(): vault_path.unlink()
+            if vault_path.exists(): 
+                vault_path.unlink()
                 
             self._log("system", f"Successfully uningested '{filename}'.")
+
+            if self.app and hasattr(self.app, 'logic'):
+                for peer_id in list(self.app.active_sessions.keys()):
+                    peer = self.app.discovery.peers.get(peer_id)
+                    if peer:
+                        self.app.network.send_message(peer['ip'], peer['port'], {
+                            "type": "FILE_REMOVAL_NOTIFY",
+                            "sender": self.app.user_id,
+                            "payload": {"filename": filename}
+                        })
             return True
         except Exception as e:
             self._log("error", f"Uningestion failed: {e}")
