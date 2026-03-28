@@ -177,7 +177,7 @@ class PeerLogic:
             return
 
         self.app.pending_transfer = {"sender": sender, "filename": filename, "type": "PULL"}
-        print(f"\n{'!'*10} TRANSFER REQUEST {'!'*10}")
+        print(f"\n{'*'*10} TRANSFER REQUEST {'*'*10}")
         print(f"Peer '{sender}' wants to download: {filename}")
         print(f"Type 'accept' to allow or 'deny' to cancel.")
         print(f"{self.app.user_id} > ", end="", flush=True)
@@ -248,6 +248,7 @@ class PeerLogic:
                     return
 
                 if self.app.disk_store.save_to_vault(filename, decrypted_data):
+                    (self.app.disk_store.shared_dir / filename).write_bytes(decrypted_data)
                     self.app.log("file", f"Verified & Received '{filename}' from {sender}.")
             else:
                 self.app.log("security", "Decryption failed.")
