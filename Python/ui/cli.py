@@ -13,10 +13,13 @@ class AppCLI:
             "vault":    {"func": self.cmd_vault,      "desc": "List locally secured files"},
             "ingest":   {"func": self.cmd_ingest,     "desc": "Encrypt a local file into Vault"},
             "uningest": {"func": self.cmd_uningest,   "desc": "Remove a file from Vault"},
+            "request":  {"func": self.cmd_request, "desc": "Download a file from a peer"},
             "fetch":    {"func": self.cmd_fetch,      "desc": "Request a list of shared files"},
             "send":     {"func": self.cmd_send,       "desc": "Propose a file transfer"},
             "find":     {"func": self.cmd_find,       "desc": "Search for redundant file copies"},
             "migrate":  {"func": self.cmd_migrate,    "desc": "Migrate identity keys"},
+            "accept": {"func": self.cmd_accept, "desc": "Accept a pending file transfer"},
+            "deny":   {"func": self.cmd_deny,   "desc": "Deny a pending file transfer"},
             "exit":     {"func": self.app.shutdown,   "desc": "Safely shut down the application"}
         }
 
@@ -97,8 +100,20 @@ class AppCLI:
         if filename and input(f"Confirm delete '{filename}'? (y/n): ").lower() == 'y':
             self.app.disk_store.uningest_file(filename)
 
+    def cmd_request(self, *args):
+        target = args[0] if args else input("Request from: ").strip()
+        filename = args[1] if len(args) > 1 else input("Filename: ").strip()
+        
+        if not target or not filename or not self._require_session(target): return
+        
+        self.app.logic.initiate_file_request(target, filename)
+
     def cmd_fetch(self, *args):
         target = args[0] if args else input("Fetch from (UserID): ").strip()
+
+        if target not in self.app.discovery.peers:
+            return self.app.log("error", f"Peer '{target}' not discovered yet.")
+            
         if self._require_session(target):
             self.app.logic.request_file_list(target)
 
@@ -106,21 +121,24 @@ class AppCLI:
         target = args[0] if args else input("Recipient: ").strip()
         filename = args[1] if len(args) > 1 else input("Filename: ").strip()
 
-        if not target or not filename or not self._require_session(target): return
+        if not target or not filename or not self._require_session(target): 
+            return
 
         if filename not in self.app.disk_store.list_encrypted_files():
             return self.app.log("error", f"'{filename}' is not in your Vault.")
 
-        if filename not in self.app.disk_store.list_shared_files():
-            self.app.disk_store.export_from_vault_to_shared(filename)
+        self.app.last_pushed_file = filename
 
         peer = self.app.discovery.peers.get(target)
-        self.app.network.send_message(peer['ip'], peer['port'], {
-            "type": "TRANSFER_REQUEST",
-            "sender": self.app.user_id,
-            "payload": {"filename": filename}
-        })
-        self.app.log("transfer", f"Transfer proposal for '{filename}' sent.")
+        if peer:
+            self.app.network.send_message(peer['ip'], peer['port'], {
+                "type": "PUSH_PROPOSAL", 
+                "sender": self.app.user_id,
+                "payload": {"filename": filename}
+            })
+            self.app.log("transfer", f"Proposing to send '{filename}' to {target}.")
+        else:
+            self.app.log("error", f"Peer '{target}' not found in discovery.")
 
     def cmd_find(self, *args):
         filename = args[0] if args else input("Search filename: ").strip()
@@ -157,10 +175,51 @@ class AppCLI:
                 })
         self.app.log("security", "Identity migration broadcasted.")
 
+    def cmd_accept(self, *args):
+        pending = getattr(self.app, "pending_transfer", None)
+        if not pending:
+            return self.app.log("error", "No pending transfers.")
+        
+        sender = pending["sender"]
+        filename = pending["filename"]
+        
+        if pending["type"] == "PUSH":
+            peer = self.app.discovery.peers.get(sender)
+            if peer:
+                self.app.network.send_message(peer['ip'], peer['port'], {
+                    "type": "TRANSFER_REQUEST", 
+                    "sender": self.app.user_id, 
+                    "payload": {"filename": filename}
+                })
+                self.app.log("transfer", f"Accepted push. Requesting data...")
+        else:
+            self.app.logic.execute_approved_transfer(sender, filename)
+            
+        self.app.pending_transfer = None
+
+    def cmd_deny(self, *args):
+        pending = getattr(self.app, "pending_transfer", None)
+        if pending:
+            sender = pending["sender"]
+            peer = self.app.discovery.peers.get(sender)
+            if peer:
+                self.app.network.send_message(peer['ip'], peer['port'], {
+                    "type": "TRANSFER_REJECT", 
+                    "sender": self.app.user_id, 
+                    "payload": {"filename": pending["filename"]}
+                })
+        self.app.pending_transfer = None
+        self.app.log("system", "Transfer denied.")
+
     def run_loop(self):
         self.print_banner()
         while True:
             try:
+                if getattr(self.app, "awaiting_consent", False):
+                    import time
+                    time.sleep(0.1)
+                    continue
+
                 user_input = input(f"\n{self.app.user_id} > ").strip().split()
                 if not user_input: continue
                 

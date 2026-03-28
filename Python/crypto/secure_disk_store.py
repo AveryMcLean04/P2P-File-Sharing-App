@@ -25,15 +25,14 @@ class SecureDiskStore:
         return [f.name.replace(".enc", "") for f in self.vault_dir.glob("*.enc")]
 
     def save_to_vault(self, filename: str, content: bytes) -> bool:
-        """Encrypts data using Master Key and saves to vault."""
         try:
-            clean_name = filename.replace(".enc", "")
+            p = Path(filename)
+            clean_name = p.stem if p.suffix == ".enc" else p.name
             file_path = self.vault_dir / f"{clean_name}.enc"
             
             encrypted_data = self.encryptor.encrypt(content)
             file_path.write_bytes(encrypted_data)
             
-            self._log("security", f"File '{clean_name}' secured in vault.")
             return True
         except Exception as e:
             self._log("error", f"Vault write failed: {e}")
@@ -41,19 +40,17 @@ class SecureDiskStore:
 
     def load_from_vault(self, filename: str) -> bytes:
         """Decrypts and retrieves a file from the vault."""
-        clean_name = filename.replace(".enc", "")
+        clean_name = filename[:-4] if filename.endswith(".enc") else filename
         file_path = self.vault_dir / f"{clean_name}.enc"
         
-        if not file_path.exists(): return b""
+        if not file_path.exists(): 
+            self._log("error", f"File {file_path} not found in vault.")
+            return b""
             
         try:
             encrypted_blob = file_path.read_bytes()
             decrypted_data = self.encryptor.decrypt(encrypted_blob)
-            
-            if decrypted_data is None:
-                self._log("security", f"VAULT INTEGRITY FAILURE: '{clean_name}' corrupted!")
-                return b""
-            return decrypted_data
+            return decrypted_data if decrypted_data else b""
         except Exception as e:
             self._log("error", f"Vault decryption failed: {e}")
             return b""
@@ -64,37 +61,49 @@ class SecureDiskStore:
         """
         Takes a plaintext file, encrypts it into the Vault, 
         and places a copy in the Shared folder for peers.
-        Handles relative paths from project root.
         """
         source = Path(source_path)
-
         if not source.exists():
             project_root = Path(__file__).resolve().parent.parent.parent
             source = project_root / source_path
 
         if not source.exists():
-            self._log("error", f"Ingest failed: '{source_path}' not found.")
+            self._log("error", f"Ingest failed: Source file '{source_path}' not found.")
             return False
 
         if source.is_dir():
-            self._log("error", f"'{source.name}' is a directory. Please provide a specific file path.")
+            self._log("error", f"Ingest failed: '{source.name}' is a directory.")
             return False
 
         try:
             content = source.read_bytes()
             filename = source.name
             
-            if self.save_to_vault(filename, content):
-                shared_path = self.shared_dir / filename
-                shared_path.write_bytes(content)
+            clean_name = filename[:-4] if filename.endswith(".enc") else filename
+            vault_path = self.vault_dir / f"{clean_name}.enc"
+            
+            encrypted_data = self.encryptor.encrypt(content)
+            if not encrypted_data:
+                raise ValueError("Encryption returned empty data.")
                 
-                self._log("system", f"Successfully ingested '{filename}'. Secured and Shared.")
+            vault_path.write_bytes(encrypted_data)
+            
+            shared_path = self.shared_dir / filename
+            shared_path.write_bytes(content)
+            
+            if vault_path.exists() and shared_path.exists():
+                self._log("security", f"File '{filename}' secured in vault.")
+                self._log("system", f"Successfully ingested '{filename}'.")
                 return True
+            else:
+                self._log("error", "Ingest failed: Files were not written to disk.")
+                return False
                 
         except Exception as e:
             self._log("error", f"Ingestion process failed: {e}")
-            
-        return False
+            if 'vault_path' in locals() and vault_path.exists(): vault_path.unlink()
+            if 'shared_path' in locals() and shared_path.exists(): shared_path.unlink()
+            return False
 
     def uningest_file(self, filename: str) -> bool:
         """Removes from Shared folder, deletes from Vault, and notifies peers."""
@@ -125,8 +134,7 @@ class SecureDiskStore:
             return False
 
     def list_shared_files(self):
-        return [f.name for f in self.shared_dir.iterdir() 
-                if f.is_file() and not f.name.startswith(".")]
+        return [f.name.replace(".enc", "") for f in self.vault_dir.iterdir() if f.is_file()]
 
     def get_shared_file_content(self, filename: str) -> bytes:
         file_path = self.shared_dir / filename

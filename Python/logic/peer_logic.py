@@ -8,7 +8,7 @@ class PeerLogic:
         self.peers = {} 
         self.active_transfers = {}
 
-    # --- Auth & Key Exchange (Requirement 2, 8 & Key Migration) ---
+    # --- Auth & Key Exchange ---
 
     def process_handshake_init(self, sender, payload, addr):
         try:
@@ -93,27 +93,6 @@ class PeerLogic:
             self.app.log("error", f"Handshake generation failed: {e}")
             return None
 
-    def process_key_migration(self, sender, payload):
-        try:
-            old_pub = base64.b64decode(payload.get("old_identity"))
-            new_pub = base64.b64decode(payload.get("new_identity"))
-            sig = base64.b64decode(payload.get("migration_sig"))
-
-            from cryptography.hazmat.primitives.asymmetric import ed25519
-            ed25519.Ed25519PublicKey.from_public_bytes(old_pub).verify(sig, new_pub)
-            
-            self.app.log("security", f"Identity migrated for {sender}.")
-            
-            if sender in self.app.active_sessions:
-                self.app.active_sessions[sender]["peer_identity"] = new_pub
-                peer = self.app.discovery.peers.get(sender)
-                if peer:
-                    msg = self.initiate_handshake(sender)
-                    if msg: self.app.network.send_message(peer['ip'], peer['port'], msg)
-        except Exception as e:
-            self.app.log("error", f"Rejected malicious migration from {sender}: {e}")
-        self.app.log("system", f"{self.app.user_id} > ", end="")
-
     # --- Communication & Discovery ---
 
     def process_chat_message(self, sender, payload):
@@ -122,7 +101,7 @@ class PeerLogic:
             decrypted = encryptor.decrypt(base64.b64decode(payload))
             if decrypted:
                 print(f"\r\033[K[ {sender} ]: {decrypted.decode('utf-8')}")
-                self.app.log("system", f"{self.app.user_id} > ", end="")
+                print(f"{self.app.user_id} > ", end="", flush=True)
         except Exception:
             self.app.log("error", "Decryption failed.")
 
@@ -135,11 +114,13 @@ class PeerLogic:
             self.app.log("system", f"Requested file list from {target_id}...")
 
     def handle_list_request(self, sender, payload=None):
-        files = self.app.disk_store.list_shared_files()
+        files = self.app.disk_store.list_encrypted_files() 
         peer = self.app.discovery.peers.get(sender)
         if peer:
             self.app.network.send_message(peer['ip'], peer['port'], {
-                "type": "FILE_LIST_RESPONSE", "sender": self.app.user_id, "payload": {"files": files}
+                "type": "FILE_LIST_RESPONSE", 
+                "sender": self.app.user_id, 
+                "payload": {"files": files}
             })
 
     def process_file_list_response(self, sender, payload):
@@ -152,54 +133,53 @@ class PeerLogic:
 
     # --- File Transfer & Consent (Requirement 3 & 7) ---
 
-    def initiate_file_request(self, target_id, filename):
-        peer = self.app.discovery.peers.get(target_id)
-        if peer:
-            self.app.network.send_message(peer['ip'], peer['port'], {
-                "type": "TRANSFER_REQUEST", 
-                "sender": self.app.user_id, 
-                "payload": {"filename": filename}
-            })
-            self.app.log("transfer", f"Sent request to {target_id} for '{filename}'. Waiting for consent...")
-        else:
-            self.app.log("error", f"Peer {target_id} not found in discovery.")
+    def handle_push_proposal(self, sender, payload):
+        """Peer is offering to send us a file."""
+        filename = payload.get("filename")
+        self.app.pending_transfer = {"sender": sender, "filename": filename, "type": "PUSH"}
+        
+        print(f"\n{'!'*10} INCOMING FILE OFFER {'!'*10}")
+        print(f"Peer '{sender}' wants to send you: {filename}")
+        print(f"Type 'accept' to receive or 'deny' to cancel.")
+        print(f"{self.app.user_id} > ", end="", flush=True)
 
     def handle_transfer_request(self, sender, payload):
-        """
-        Processes a request from a peer to download a file.
-        """
+        """Peer is requesting to download a file from us."""
         filename = payload.get("filename")
-    
-        if filename not in self.app.disk_store.list_shared_files():
-            self.app.log("error", f"Ghost Request: {sender} asked for '{filename}', but it's missing from Disk.")
-            peer = self.app.discovery.peers.get(sender)
-            if peer:
-                self.app.network.send_message(peer['ip'], peer['port'], {
-                    "type": "TRANSFER_ERROR",
-                    "sender": self.app.user_id,
-                    "payload": f"File '{filename}' is no longer available on this host."
-                })
+        
+        if hasattr(self.app, "last_pushed_file") and self.app.last_pushed_file == filename:
+            self.app.log("transfer", f"Auto-approving request for '{filename}' (previously offered).")
+            self.execute_approved_transfer(sender, filename)
+            del self.app.last_pushed_file
             return
 
-        self.app.log("transfer", f"CONSENT REQUIRED: {sender} wants to download '{filename}'.")
-        choice = input(f"Allow '{filename}' to be sent to {sender}? (y/n): ").strip().lower()
-    
-        peer = self.app.discovery.peers.get(sender)
+        self.app.pending_transfer = {"sender": sender, "filename": filename, "type": "PULL"}
+        print(f"\n{'!'*10} TRANSFER REQUEST {'!'*10}")
+        print(f"Peer '{sender}' wants to download: {filename}")
+        print(f"Type 'accept' to allow or 'deny' to cancel.")
+        print(f"{self.app.user_id} > ", end="", flush=True)
+
+    def execute_approved_transfer(self, sender, filename):
+        """Finalizes the transfer once the user types 'accept'."""
         session = self.app.active_sessions.get(sender)
+        if not session:
+            self.app.log("security", "Session lost during approval.")
+            return
 
-        if choice == 'y' and peer and session:
-            try:
-                file_data = self.app.disk_store.get_shared_file_content(filename)
-                if not file_data:
-                    self.app.log("error", f"File '{filename}' read failed (deleted during prompt?).")
-                    return
+        try:
+            # Check if file exists in shared, if not, try to export it from vault
+            if filename not in self.app.disk_store.list_shared_files():
+                self.app.disk_store.export_from_vault_to_shared(filename)
+            
+            file_data = self.app.disk_store.get_shared_file_content(filename)
+            file_hash = hashlib.sha256(file_data).hexdigest()
+            signature = self.app.auth_manager.sign(file_hash.encode())
 
-                file_hash = hashlib.sha256(file_data).hexdigest()
-                signature = self.app.auth_manager.sign(file_hash.encode())
+            encryptor = session["encryptor"]
+            encrypted_file = encryptor.encrypt(file_data)
 
-                encryptor = session["encryptor"]
-                encrypted_file = encryptor.encrypt(file_data)
-
+            peer = self.app.discovery.peers.get(sender)
+            if peer:
                 self.app.network.send_message(peer['ip'], peer['port'], {
                     "type": "TRANSFER_ACCEPT", 
                     "sender": self.app.user_id,
@@ -210,20 +190,9 @@ class PeerLogic:
                         "signature": base64.b64encode(signature).decode()
                     }
                 })
-                self.app.log("transfer", f"File '{filename}' sent successfully with integrity guarantee.")
-
-            except Exception as e:
-                self.app.log("error", f"Failed to prepare file transfer: {e}")
-
-        elif peer:
-            self.app.network.send_message(peer['ip'], peer['port'], {
-                "type": "TRANSFER_REJECT", 
-                "sender": self.app.user_id, 
-                "payload": {"filename": filename}
-            })
-            self.app.log("transfer", "Transfer request denied.")
-    
-        self.app.log("system", f"{self.app.user_id} > ", end="")
+                self.app.log("transfer", f"Successfully sent '{filename}' to {sender}.")
+        except Exception as e:
+            self.app.log("error", f"Transfer execution failed: {e}")
 
     def handle_transfer_accept(self, sender, payload):
         """Receives, verifies, and saves the file."""
@@ -234,7 +203,7 @@ class PeerLogic:
     
         session = self.app.active_sessions.get(sender)
         if not session:
-            self.app.log("security", f"DENIED: No secure session established with {sender}.")
+            self.app.log("security", f"DENIED: No secure session with {sender}.")
             return
 
         try:
@@ -242,7 +211,7 @@ class PeerLogic:
             signature = base64.b64decode(encoded_sig)
         
             if not self.app.auth_manager.verify_signature(peer_pub_key, signature, received_hash.encode()):
-                self.app.log("security", f"CRITICAL: Signature mismatch on '{filename}'! Possible tampering.")
+                self.app.log("security", f"CRITICAL: Signature mismatch on '{filename}'!")
                 return
 
             encryptor = session["encryptor"]
@@ -252,25 +221,33 @@ class PeerLogic:
             if decrypted_data:
                 actual_hash = hashlib.sha256(decrypted_data).hexdigest()
                 if actual_hash != received_hash:
-                    self.app.log("security", f"INTEGRITY FAILURE: SHA-256 mismatch for '{filename}'!")
+                    self.app.log("security", f"INTEGRITY FAILURE: Hash mismatch for '{filename}'!")
                     return
 
                 if self.app.disk_store.save_to_vault(filename, decrypted_data):
-                    self.app.log("file", f"Verified & Received '{filename}' from {sender}. Secured in Vault.")
+                    self.app.log("file", f"Verified & Received '{filename}' from {sender}.")
             else:
-                self.app.log("security", "Decryption failed: Key mismatch or corrupted data.")
-            
+                self.app.log("security", "Decryption failed.")
         except Exception as e:
-            self.app.log("error", f"Processing failed for file transfer: {e}")
+            self.app.log("error", f"Processing failed: {e}")
         
-        self.app.log("system", f"{self.app.user_id} > ", end="")
+        print(f"{self.app.user_id} > ", end="", flush=True)
 
-    # --- Redundancy & Maintenance (Requirement 5) ---
+    def handle_transfer_reject(self, sender, payload):
+        filename = payload.get("filename")
+        self.app.log("transfer", f"Peer {sender} declined the transfer of '{filename}'.")
+        print(f"{self.app.user_id} > ", end="", flush=True)
+
+    # --- Discovery & Maintenance ---
+
+    def handle_peer_left(self, sender, payload=None):
+        self.app.active_sessions.pop(sender, None)
+        if hasattr(self.app, "discovery"):
+            self.app.discovery.peers.pop(sender, None)
+        self.app.log("network", f"Peer {sender} disconnected.")
+        print(f"{self.app.user_id} > ", end="", flush=True)
 
     def handle_redundancy_query(self, sender, payload):
-        """
-        FIX: Only offer the file if it physically exists in shared storage.
-        """
         filename = payload.get("filename")
         if filename in self.app.disk_store.list_shared_files():
             peer = self.app.discovery.peers.get(sender)
@@ -280,20 +257,3 @@ class PeerLogic:
                     "sender": self.app.user_id,
                     "payload": {"filename": filename}
                 })
-        else:
-            pass
-
-    def process_file_removal(self, sender, payload):
-        """
-        NEW: Handles notifications that a peer has deleted a file.
-        """
-        filename = payload.get("filename")
-        self.app.log("system", f"Update: Peer {sender} has uningested '{filename}'.")
-        self.app.log("system", f"{self.app.user_id} > ", end="")
-
-    def handle_peer_left(self, sender, payload=None):
-        self.app.active_sessions.pop(sender, None)
-        if hasattr(self.app, "discovery"):
-            self.app.discovery.peers.pop(sender, None)
-        self.app.log("network", f"Peer {sender} disconnected.")
-        self.app.log("system", f"{self.app.user_id} > ", end="")
