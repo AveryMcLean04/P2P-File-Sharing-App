@@ -54,16 +54,41 @@ public class MessageDispatcher {
                 case "FILE_LIST_RESPONSE":
                     handleFileListResponse(sender, json);
                     break;
+                case "PUSH_PROPOSAL":
+                    // Alice is offering you a file
+                    String pushPayload = extractPayload(json);
+                    String pushFile = extractField(pushPayload, "filename"); 
+                    System.out.println("\n[!] INCOMING FILE OFFER: " + sender + " wants to send you '" + pushFile + "'.");
+                    System.out.print("Accept transfer? (y/n) > ");
+                    PeerDiscovery.pendingOffers.put(sender, new String[]{pushFile});
+                    break;
+
                 case "TRANSFER_REQUEST":
-                    // Alice is asking permission to send (Requirement 3)
+                    // Alice wants to download a file from us
                     String reqPayload = extractPayload(json);
                     String reqFile = extractField(reqPayload, "filename"); 
-                    System.out.println("\n[!] CONSENT REQUIRED: " + sender + " wants to send you '" + reqFile + "'.");
-                    System.out.print("Accept transfer? (y/n) > ");
-                    PeerDiscovery.pendingTransfers.put(sender, new String[]{reqFile});
+    
+                    // Check if this is a request for a file we JUST offered her
+                    if (reqFile.equals(PeerDiscovery.autoApproveFile)) {
+                        System.out.println("\n[*] Auto-approving request for '" + reqFile + "' (previously offered).");
+                        PeerDiscovery.autoApproveFile = null; // Clear the flag
+                        executeApprovedTransfer(sender, reqFile); // Send the file immediately!
+                    } else {
+                        // Standard pull request
+                        System.out.println("\n[!] CONSENT REQUIRED: " + sender + " wants to download '" + reqFile + "' from you.");
+                        System.out.print("Allow? (y/n) > ");
+                        PeerDiscovery.pendingTransfers.put(sender, new String[]{reqFile});
+                    }
                     break;
                 case "TRANSFER_ACCEPT":
                     handleTransferAccept(sender, json);
+                    break;
+                case "OFFER_ACCEPT":
+                    handleOfferAccept(sender, json);
+                    break;
+                case "OFFER_REJECT":
+                    System.out.println("\n[-] " + sender + " declined your file offer.");
+                    System.out.print(myName + " > ");
                     break;
                 case "PEER_LEFT":
                     PeerDiscovery.activePeers.remove(sender);
@@ -294,6 +319,81 @@ public class MessageDispatcher {
             System.out.println("[+] Received file '" + fileName + "' from " + sender + " (saved to downloads folder)");
         } catch (Exception e) {
             System.out.println("[-] Failed to process TRANSFER_REQUEST from " + sender + ": " + e.getMessage());
+        }
+    }
+
+    private void handleOfferAccept(String sender, String json) {
+        try {
+            String payload = extractPayload(json);
+            String fileName = extractField(payload, "filename");
+            System.out.println("\n[+] " + sender + " accepted your offer! Encrypting and sending '" + fileName + "'...");
+
+            // 1. Read the file
+            java.nio.file.Path filePath = Paths.get("data_" + myName + "/shared/" + fileName);
+            byte[] fileData = Files.readAllBytes(filePath);
+
+            // 2. Hash and Sign (Requirement 5 & 11)
+            byte[] hashBytes = java.security.MessageDigest.getInstance("SHA-256").digest(fileData);
+            String fileHash = org.bouncycastle.util.encoders.Hex.toHexString(hashBytes);
+            byte[] signature = identity.sign(fileHash.getBytes("UTF-8"));
+
+            // 3. Encrypt (Requirement 7)
+            SessionManager session = network.getSession(sender);
+            byte[] encryptedFile = session.encrypt(fileData);
+
+            // 4. Send the data using the TRANSFER_ACCEPT message type
+            String[] peerInfo = PeerDiscovery.activePeers.get(sender);
+            if (peerInfo != null) {
+                String outPayload = "{" +
+                    "\"filename\":\"" + fileName + "\"," +
+                    "\"data\":\"" + Base64.getEncoder().encodeToString(encryptedFile) + "\"," +
+                    "\"sha256\":\"" + fileHash + "\"," +
+                    "\"signature\":\"" + Base64.getEncoder().encodeToString(signature) + "\"" +
+                "}";
+                String msg = "{\"type\":\"TRANSFER_ACCEPT\",\"sender\":\"" + myName + "\",\"payload\":" + outPayload + "}";
+            
+                network.sendMessage(peerInfo[0], Integer.parseInt(peerInfo[1]), msg);
+                System.out.println("[+] File securely sent to " + sender + "!");
+                System.out.print(myName + " > ");
+            }
+
+        } catch (Exception e) {
+            System.out.println("\n[-] Failed to send file after offer accepted: " + e.getMessage());
+            System.out.print(myName + " > ");
+        }
+    }
+
+    public void executeApprovedTransfer(String target, String fileName) {
+        try {
+            java.nio.file.Path filePath = Paths.get("data_" + myName + "/shared/" + fileName);
+            if (!Files.exists(filePath)) {
+                System.out.println("[-] Error: File '" + fileName + "' not found.");
+                return;
+            }
+            byte[] fileData = Files.readAllBytes(filePath);
+
+            byte[] hashBytes = java.security.MessageDigest.getInstance("SHA-256").digest(fileData);
+            String fileHash = org.bouncycastle.util.encoders.Hex.toHexString(hashBytes);
+            byte[] signature = identity.sign(fileHash.getBytes("UTF-8"));
+
+            SessionManager session = network.getSession(target);
+            byte[] encryptedFile = session.encrypt(fileData);
+
+            String[] peerInfo = PeerDiscovery.activePeers.get(target);
+            if (peerInfo != null) {
+                String payload = "{" +
+                    "\"filename\":\"" + fileName + "\"," +
+                    "\"data\":\"" + Base64.getEncoder().encodeToString(encryptedFile) + "\"," +
+                    "\"sha256\":\"" + fileHash + "\"," +
+                    "\"signature\":\"" + Base64.getEncoder().encodeToString(signature) + "\"" +
+                "}";
+                String msg = "{\"type\":\"TRANSFER_ACCEPT\",\"sender\":\"" + myName + "\",\"payload\":" + payload + "}";
+            
+                network.sendMessage(peerInfo[0], Integer.parseInt(peerInfo[1]), msg);
+                System.out.println("[+] File '" + fileName + "' securely sent to " + target + "!");
+            }
+        } catch (Exception e) {
+            System.out.println("[-] Failed to send file: " + e.getMessage());
         }
     }
 }

@@ -17,8 +17,11 @@ public class PeerDiscovery {
     static final String SERVICE_TYPE = "_cisc468secshare._tcp.local.";
 
     static final Map<String, String[]> activePeers = new ConcurrentHashMap<>();
-    // ADDED: tracks pending incoming transfer requests waiting for accept/reject
     static final Map<String, String[]> pendingTransfers = new ConcurrentHashMap<>();
+    
+    static final Map<String, String[]> pendingOffers = new ConcurrentHashMap<>();
+
+    static String autoApproveFile = null;
 
     static InetAddress getLocalNetworkAddress() throws Exception {
         try (DatagramSocket socket = new DatagramSocket()) {
@@ -193,6 +196,41 @@ public class PeerDiscovery {
                     jmdns.close();
                     System.exit(0);
                     break;
+                case "send": {
+                    System.out.print("Send file to: ");
+                    String sendTarget = scanner.nextLine().trim();
+                    if (!activePeers.containsKey(sendTarget)) {
+                        System.out.println("[-] Peer '" + sendTarget + "' not found.");
+                        break;
+                    }
+                    if (!network.hasSession(sendTarget)) {
+                        System.out.println("[-] No secure session with " + sendTarget + ". Run 'connect' first.");
+                        break;
+                    }
+                    
+                    System.out.print("Filename to send: ");
+                    String sendFileName = scanner.nextLine().trim();
+                    
+                    // 1. Check if the file actually exists before we offer it
+                    java.nio.file.Path filePath = java.nio.file.Paths.get("data_" + myName + "/shared/" + sendFileName);
+                    if (!java.nio.file.Files.exists(filePath)) {
+                        System.out.println("[-] Error: File '" + sendFileName + "' not found in your shared folder.");
+                        break;
+                    }
+
+                    try {
+                        // Flag this file so we auto-send it when they request it!
+                        autoApproveFile = sendFileName; 
+                        
+                        String[] peer = activePeers.get(sendTarget);
+                        String msg = "{\"type\":\"PUSH_PROPOSAL\",\"sender\":\"" + myName + "\",\"payload\":{\"filename\":\"" + sendFileName + "\"}}";
+                        network.sendMessage(peer[0], Integer.parseInt(peer[1]), msg);
+                        System.out.println("[*] Offered '" + sendFileName + "' to " + sendTarget + ". Waiting for them to accept...");
+                    } catch (Exception e) {
+                        System.out.println("[-] Send offer failed: " + e.getMessage());
+                    }
+                    break;
+                }
 
                 case "request":
                     System.out.print("Request file from: ");
@@ -220,53 +258,34 @@ public class PeerDiscovery {
                     break;
                 case "y":
                 case "yes": {
-                    if (pendingTransfers.isEmpty()) {
-                        System.out.println("[-] No pending transfers to approve.");
+                    // Scenario A: We are accepting an incoming OFFER (Push)
+                    if (!pendingOffers.isEmpty()) {
+                        Map.Entry<String, String[]> entry = pendingOffers.entrySet().iterator().next();
+                        String sender = entry.getKey();
+                        String fileName = entry.getValue()[0];
+                        pendingOffers.remove(sender);
+        
+                        // Tell Alice we want it by sending a standard TRANSFER_REQUEST
+                        String[] peer = activePeers.get(sender);
+                        String msg = "{\"type\":\"TRANSFER_REQUEST\",\"sender\":\"" + myName + "\",\"payload\":{\"filename\":\"" + fileName + "\"}}";
+                        network.sendMessage(peer[0], Integer.parseInt(peer[1]), msg);
+                        System.out.println("[*] Offer accepted. Requesting '" + fileName + "' from " + sender + "...");
                         break;
                     }
-                    // Grab the first pending request from the map
-                    Map.Entry<String, String[]> entry = pendingTransfers.entrySet().iterator().next();
-                    String requester = entry.getKey();
-                    String fileName = entry.getValue()[0];
-                    pendingTransfers.remove(requester);
-
-                    try {
-                        // 1. Read the file from your local shared folder
-                        java.nio.file.Path filePath = java.nio.file.Paths.get("data_" + myName + "/shared/" + fileName);
-                        if (!java.nio.file.Files.exists(filePath)) {
-                            System.out.println("[-] Error: File '" + fileName + "' not found in your shared folder.");
-                            break;
-                        }
-                        byte[] fileData = java.nio.file.Files.readAllBytes(filePath);
-
-                        // 2. Hash the file for integrity (Requirement 5)
-                        byte[] hashBytes = java.security.MessageDigest.getInstance("SHA-256").digest(fileData);
-                        String fileHash = org.bouncycastle.util.encoders.Hex.toHexString(hashBytes);
-
-                        // 3. Sign the hash to prove it came from you (Requirement 2 & 11)
-                        byte[] signature = identity.sign(fileHash.getBytes("UTF-8"));
-
-                        // 4. Encrypt the file using the secure session key (Requirement 7)
-                        SessionManager session = network.getSession(requester);
-                        byte[] encryptedFile = session.encrypt(fileData);
-
-                        // 5. Build and send the TRANSFER_ACCEPT JSON payload
-                        String[] peerInfo = activePeers.get(requester);
-                        if (peerInfo != null) {
-                            String payload = "{" +
-                                "\"filename\":\"" + fileName + "\"," +
-                                "\"data\":\"" + Base64.getEncoder().encodeToString(encryptedFile) + "\"," +
-                                "\"sha256\":\"" + fileHash + "\"," +
-                                "\"signature\":\"" + Base64.getEncoder().encodeToString(signature) + "\"" +
-                            "}";
-                            String msg = "{\"type\":\"TRANSFER_ACCEPT\",\"sender\":\"" + myName + "\",\"payload\":" + payload + "}";
-                            
-                            network.sendMessage(peerInfo[0], Integer.parseInt(peerInfo[1]), msg);
-                            System.out.println("[+] File '" + fileName + "' encrypted and sent to " + requester + "!");
-                        }
-                    } catch (Exception e) {
-                        System.out.println("[-] Failed to send file: " + e.getMessage());
+    
+                    // Scenario B: We are approving an incoming REQUEST (Pull)
+                    if (!pendingTransfers.isEmpty()) {
+                        Map.Entry<String, String[]> entry = pendingTransfers.entrySet().iterator().next();
+                        String requester = entry.getKey();
+                        String fileName = entry.getValue()[0];
+                        pendingTransfers.remove(requester);
+        
+                        // Use our dispatcher helper to send the data
+                        dispatcher.executeApprovedTransfer(requester, fileName);
+                        break;
                     }
+    
+                    System.out.println("[-] No pending transfers or offers to approve.");
                     break;
                 }
 
