@@ -1,18 +1,21 @@
 import os
-import base64
 from pathlib import Path
-from typing import Optional, Tuple
-
+from typing import Tuple
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives.asymmetric import x25519, ed25519
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-from cryptography.exceptions import InvalidSignature
 
-from crypto.encryption import FileEncryptor 
+from crypto.encryption import FileEncryptor
+
 
 class AuthManager:
-    def __init__(self, app=None, key_dir="keys"):
+    """
+    Manages the security lifecycle of the application, including password-based 
+    vault unlocking, long-term Ed25519 identity management, and ephemeral 
+    X25519 key exchanges for Perfect Forward Secrecy (PFS).
+    """
+    def __init__(self, app, key_dir="keys"):
         self.app = app
         self.key_dir = Path(key_dir)
         self.key_dir.mkdir(parents=True, exist_ok=True)
@@ -20,16 +23,13 @@ class AuthManager:
         self.local_encryptor = None
         self.pending_handshakes = {}
 
-    def _log(self, category: str, message: str):
-        if self.app and hasattr(self.app, 'log'):
-            self.app.log(category, message)
-        else:
-            print(f"[{category.upper()}] {message}")
-
     # --- Vault Security (Req 9) ---
 
     def unlock_vault(self, password: str) -> bool:
-        """Derives master key and verifies via canary file."""
+        """
+        Derives a master key from a user password using PBKDF2-HMAC-SHA256.
+        Validates the key by attempting to decrypt a 'verifier' canary file.
+        """
         salt_path = self.key_dir / "salt.bin"
         verifier_path = self.key_dir / "verifier.bin"
 
@@ -66,7 +66,10 @@ class AuthManager:
     # --- Identity Management (Req 2 & 6) ---
 
     def generate_new_identity(self) -> Tuple[bytes, bytes]:
-        """Generates long-term Ed25519 identity keypair."""
+        """
+        Generates a new Ed25519 keypair used for long-term digital signatures 
+        and peer identification.
+        """
         priv_key = ed25519.Ed25519PrivateKey.generate()
         pub_key = priv_key.public_key()
         
@@ -82,18 +85,26 @@ class AuthManager:
         return priv_bytes, pub_bytes
 
     def save_identity_securely(self, priv_key_bytes: bytes):
+        """
+        Encrypts the private identity key using the vault's master key 
+        before writing it to persistent storage.
+        """
         if not self.local_encryptor:
             raise PermissionError("Vault locked.")
         encrypted_key = self.local_encryptor.encrypt(priv_key_bytes)
         (self.key_dir / "id_encrypted.bin").write_bytes(encrypted_key)
 
-    def load_identity_securely(self) -> Optional[bytes]:
+    def load_identity_securely(self) -> bytes:
+        """
+        Attempts to load and decrypt the identity key. If no identity exists 
+        or decryption fails, it triggers the generation of a fresh identity.
+        """
         path = self.key_dir / "id_encrypted.bin"
         if not self.local_encryptor:
             return None
         
         if not path.exists():
-            self._log("system", "No identity found. Generating new keys...")
+            self.app.log("system", "No identity found. Generating new keys...")
             return self._generate_and_save_fresh_identity()
 
         try:
@@ -102,19 +113,27 @@ class AuthManager:
                 return decrypted_key
             raise ValueError("Invalid key length.")
         except Exception as e:
-            self._log("security", f"Vault Integrity Error: {e}")
+            self.app.log("security", f"Vault Integrity Error: {e}")
             path.replace(path.with_suffix(".bak"))
             return self._generate_and_save_fresh_identity()
 
-    def _generate_and_save_fresh_identity(self) -> Optional[bytes]:
+    def _generate_and_save_fresh_identity(self) -> bytes:
+        """
+        Internal helper to automate the creation and secure storage 
+        of a new identity pair.
+        """
         priv_bytes, _ = self.generate_new_identity()
         if not self.local_encryptor:
-            self._log("error", "Cannot save identity: Vault is locked!")
+            self.app.log("error", "Cannot save identity: Vault is locked!")
             return None
         self.save_identity_securely(priv_bytes)
         return priv_bytes
 
     def get_public_key(self) -> bytes:
+        """
+        Retrieves the public portion of the long-term identity key.
+        Used by peers to verify this node's signatures.
+        """
         priv_bytes = self.load_identity_securely()
         if not priv_bytes:
             return b"ERROR_KEY"
@@ -126,8 +145,9 @@ class AuthManager:
 
     def migrate_identity(self) -> Tuple[bytes, bytes, bytes]:
         """
-        Requirement 6: Rotate long-term identity.
-        Returns (old_pub, new_pub, migration_signature)
+        Performs a key rotation. Generates a new identity and signs the 
+        new public key with the old private key to provide a verifiable 
+        chain of trust for peers.
         """
         old_priv_bytes = self.load_identity_securely()
         if not old_priv_bytes:
@@ -143,13 +163,16 @@ class AuthManager:
         migration_sig = old_priv.sign(new_pub_bytes)
         self.save_identity_securely(new_priv_bytes)
         
-        self._log("security", "Identity migrated. Old key invalidated.")
+        self.app.log("security", "Identity migrated. Old key invalidated.")
         return old_pub_bytes, new_pub_bytes, migration_sig
 
     # --- PFS & Mutual Auth (Req 8) ---
 
     def generate_ephemeral_pair(self) -> Tuple[x25519.X25519PrivateKey, bytes]:
-        """Returns (Private_Object, Public_Bytes) for X25519."""
+        """
+        Creates a one-time use X25519 keypair for a Key Exchange. 
+        Discarding this after use ensures Perfect Forward Secrecy.
+        """
         priv_key = x25519.X25519PrivateKey.generate()
         pub_bytes = priv_key.public_key().public_bytes(
             encoding=serialization.Encoding.Raw,
@@ -157,7 +180,8 @@ class AuthManager:
         )
         return priv_key, pub_bytes
 
-    def sign(self, data: bytes) -> Optional[bytes]:
+    def sign(self, data: bytes) -> bytes:
+        """Signs arbitrary data using the long-term Ed25519 identity key."""
         priv_bytes = self.load_identity_securely()
         if not priv_bytes:
             return None
@@ -165,15 +189,20 @@ class AuthManager:
         return priv_key.sign(data)
 
     def verify_signature(self, peer_pub_identity: bytes, signature: bytes, data: bytes) -> bool:
+        """Verifies that data was signed by the owner of a specific public identity."""
         try:
             pub_key = ed25519.Ed25519PublicKey.from_public_bytes(peer_pub_identity)
             pub_key.verify(signature, data)
             return True
         except Exception:
-            self._log("security", "Signature verification failed!")
+            self.app.log("security", "Signature verification failed!")
             return False
 
     def derive_shared_secret(self, peer_ephemeral_bytes: bytes, local_priv_obj) -> bytes:
+        """
+        Executes an X25519 Diffie-Hellman exchange and runs the result 
+        through HKDF to produce a high-entropy symmetric session key.
+        """
         peer_pub_obj = x25519.X25519PublicKey.from_public_bytes(peer_ephemeral_bytes)
         raw_secret = local_priv_obj.exchange(peer_pub_obj)
         return HKDF(
@@ -184,4 +213,8 @@ class AuthManager:
         ).derive(raw_secret)
 
     def create_encryptor(self, session_key: bytes) -> FileEncryptor:
+        """
+        Initializes a FileEncryptor instance using a derived session key 
+        to secure communication with a peer.
+        """
         return FileEncryptor(session_key, app=self.app)

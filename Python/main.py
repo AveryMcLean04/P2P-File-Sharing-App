@@ -1,6 +1,5 @@
 import os
 import sys
-import time
 import getpass
 from pathlib import Path
 
@@ -16,44 +15,63 @@ try:
     from logic.peer_logic import PeerLogic
     from ui.cli import AppCLI
 except ImportError as e:
-    print(f"[FATAL] Missing internal modules. {e}")
+    print(f"[FATAL] Dependency error: {e}")
     sys.exit(1)
 
 class SecureP2PApp:
-    def __init__(self, user_id="Alice", port=5000):
+    """
+    The central coordinator for the Secure P2P system.
+    Orchestrates identity, networking, storage, and the user interface.
+    """
+    
+    def __init__(self, user_id: str = "Alice", port: int = 5000):
         self.user_id = user_id
         self.config = AppConfig(user_id=user_id, port=port)
         self.base_path = Path(__file__).resolve().parent
+        
+        # Setup filesystem hierarchy (Data, Shared, Vault)
         self.data_path, self.shared_path, self.vault_path = self.config.initialize_directories(self.base_path)
         
+        # Initialize Core Managers
         self.auth_manager = AuthManager(app=self, key_dir=str(self.data_path / "keys"))
-        self.disk_store = None 
+        self.disk_store = None  # Deferred until Vault is unlocked
         
+        # Session and Logic State
         self.active_sessions = {}
         self.logic = PeerLogic(self)
         self.dispatcher = MessageDispatcher(self, self.logic)
+        
+        # Networking Components
         self.network = NetworkManager(self, port, self.dispatcher.handle)
         self.discovery = MDNSHandler(self, user_id=self.user_id, port=port)
+        
+        # User Interface
         self.cli = AppCLI(self)
 
-    def login(self, max_retries=3):
-        self.log("security", f"Vault access required for {self.user_id}")
+    def login(self, max_retries: int = 3) -> bool:
+        """
+        Secures the application start. Users must provide the correct 
+        Vault password to derive the local encryption keys.
+        """
+        self.log("security", f"Vault access requested for user: {self.user_id}")
         
         for attempt in range(1, max_retries + 1):
-            user_input = getpass.getpass(f"[{attempt}/{max_retries}] Enter Vault Password: ")
+            password = getpass.getpass(f"[{attempt}/{max_retries}] Enter Vault Password: ")
             
-            if user_input == self.config.password:
-                if self.auth_manager.unlock_vault(self.config.password):
+            if password == self.config.password:
+                if self.auth_manager.unlock_vault(password):
                     self.post_login_init()
                     return True
-            else:
-                self.log("error", "Incorrect password.")
+            
+            self.log("error", "Invalid credentials.")
+            
         return False
 
     def post_login_init(self):
-        """Initializes components requiring an unlocked vault."""
-        if self.disk_store:
-            return
+        """
+        Starts services that depend on the unlocked Vault (Encryption and Discovery).
+        """
+        if self.disk_store: return # Prevent double-initialization
 
         try:
             self.disk_store = SecureDiskStore(
@@ -64,52 +82,60 @@ class SecureP2PApp:
             )
 
             id_pub = self.auth_manager.get_public_key()
-            if not id_pub or id_pub in [b"ERROR_KEY", b"ERROR_NO_KEY"]:
-                raise Exception("Identity Check Failed: Private key missing or corrupted.")
+            if not id_pub or len(id_pub) < 32:
+                raise ValueError("Identity key is missing or corrupted.")
 
             self.log("security", f"Identity Verified: [ID: {id_pub.hex()[:12]}...]")
             
             self.discovery.register_service()
             self.discovery.start_discovery()
-            self.log("network", f"Discovery service active as '{self.user_id}'.")
+            self.log("network", f"mDNS Discovery active as '{self.user_id}'.")
 
         except Exception as e:
-            self.log("error", f"Initialization failure: {str(e)}")
-            raise
+            self.log("error", f"Boot failure: {e}")
+            self.shutdown()
 
     def run(self):
-        """Starts the active network and UI loops."""
-        self.log("system", f"Starting Secure P2P as {self.user_id}...")
+        """Starts the TCP server and enters the interactive CLI loop."""
+        self.log("system", f"Secure P2P Node starting on port {self.config.port}...")
         self.network.start_server()
         self.cli.run_loop()
 
     def shutdown(self):
-        """Close the active network and UI loops."""
-        self.log("system", "Shutting down safely...")
-        self.discovery.stop()
-        self.network.broadcast_peer_left(self.user_id, self.discovery.peers)
-        self.network.stop()
-        sys.exit(0)
+        """
+        Gracefully closes all threads and notifies peers of departure 
+        to maintain network hygiene.
+        """
+        self.log("system", "Performing graceful shutdown...")
+        try:
+            self.network.broadcast_peer_left(self.user_id, self.discovery.peers)
+            self.discovery.stop()
+            self.network.stop()
+        except Exception as e:
+            self.log("error", f"Shutdown warning: {e}")
+        
+        self.log("system", "Goodbye.")
+        os._exit(0)
 
-    def log(self, category, message, end="\n"):
-        """Log important info."""
-        print(f"[{category.upper()}] {message}", end=end, flush=True)
+    def log(self, category: str, message: str):
+        """Centralized logging for the UI."""
+        print(f"[{category.upper()}] {message}", flush=True)
 
-# --- MAIN EXECUTION BLOCK ---
+# --- Entry Point ---
 if __name__ == "__main__":
     u_id = sys.argv[1] if len(sys.argv) > 1 else "Alice"
     u_port = int(sys.argv[2]) if len(sys.argv) > 2 else 5000
     
     app = SecureP2PApp(user_id=u_id, port=u_port)
     
-    if app.login(max_retries=3):
-        try:
+    try:
+        if app.login():
             app.run()
-        except KeyboardInterrupt:
-            app.shutdown()
-        except Exception as e:
-            app.log("error", f"Application crashed: {e}")
-            app.shutdown()
-    else:
-        app.log("fatal", "Maximum retry attempts reached. Exiting for security.")
-        sys.exit(1)
+        else:
+            app.log("fatal", "Authentication failed. Exiting.")
+            sys.exit(1)
+    except KeyboardInterrupt:
+        app.shutdown()
+    except Exception as e:
+        app.log("error", f"Critical crash: {e}")
+        app.shutdown()
