@@ -185,22 +185,7 @@ class AppCLI:
 
     def cmd_migrate(self, *args):
         """Forces an identity rotation and notifies all peers to update their trust records."""
-        old_pub, new_pub, sig = self.app.auth_manager.migrate_identity()
-        payload = {
-            "old_identity": base64.b64encode(old_pub).decode(),
-            "new_identity": base64.b64encode(new_pub).decode(),
-            "migration_sig": base64.b64encode(sig).decode()
-        }
-
-        for peer_id in list(self.app.active_sessions.keys()):
-            peer = self.app.discovery.peers.get(peer_id)
-            if peer:
-                self.app.network.send_message(peer['ip'], peer['port'], {
-                    "type": "KEY_MIGRATION_NOTIFY", 
-                    "sender": self.app.user_id, 
-                    "payload": payload
-                })
-        self.app.log("security", "New identity generated and broadcasted to active sessions.")
+        self.app.logic.rotate_identity()
 
     def cmd_accept(self, *args):
         """Approves a pending incoming transfer or push proposal."""

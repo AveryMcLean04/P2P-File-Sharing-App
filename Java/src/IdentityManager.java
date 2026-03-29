@@ -100,14 +100,11 @@ public class IdentityManager {
         this.privateKey = (Ed25519PrivateKeyParameters) keyPair.getPrivate();
         this.publicKey = (Ed25519PublicKeyParameters) keyPair.getPublic();
 
-        Files.write(Paths.get(pubKeyFile), publicKey.getEncoded());
-
-        byte[] encryptedPrivKey = encryptPrivateKey(privateKey.getEncoded(), password);
-        Files.write(Paths.get(privKeyFile), encryptedPrivKey);
+        // Call our new helper method instead of writing the files manually here!
+        saveKeys(password);
 
         System.out.println("[+] Identity keypair generated and saved.");
-        printFingerprint();
-}
+    }
 
     // -------------------------------------------------------------------------
     // Key loading
@@ -255,5 +252,56 @@ public class IdentityManager {
             if (i < 19) sb.append(":");
         }
         System.out.println("[*] Fingerprint: " + sb.toString());
+    }
+    private void saveKeys(char[] password) throws Exception {
+        // Save the public key in plain text
+        Files.write(Paths.get(pubKeyFile), publicKey.getEncoded());
+
+        // Encrypt and save the private key
+        byte[] encryptedPrivKey = encryptPrivateKey(privateKey.getEncoded(), password);
+        Files.write(Paths.get(privKeyFile), encryptedPrivKey);
+        
+        printFingerprint();
+    }
+
+    // --- KEY MIGRATION ---
+    
+    /**
+     * Generates a new keypair, signs the new public key with the OLD private key,
+     * overwrites the local files, and returns the payload to broadcast.
+     * * @return A String array containing: [0] New Public Key (Base64), [1] Signature (Base64)
+     */
+    public String[] migrateKey(char[] password) throws Exception {
+        System.out.println("[*] Generating new Identity Keypair for migration...");
+
+        // 1. Generate the NEW Ed25519 keypair
+        org.bouncycastle.crypto.generators.Ed25519KeyPairGenerator keyGen = new org.bouncycastle.crypto.generators.Ed25519KeyPairGenerator();
+        keyGen.init(new org.bouncycastle.crypto.params.Ed25519KeyGenerationParameters(new java.security.SecureRandom()));
+        org.bouncycastle.crypto.AsymmetricCipherKeyPair newKeyPair = keyGen.generateKeyPair();
+
+        org.bouncycastle.crypto.params.Ed25519PublicKeyParameters newPubKey = (org.bouncycastle.crypto.params.Ed25519PublicKeyParameters) newKeyPair.getPublic();
+        org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters newPrivKey = (org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters) newKeyPair.getPrivate();
+
+        byte[] newPubKeyBytes = newPubKey.getEncoded();
+
+        // 2. Sign the NEW public key using the OLD private key (Proof of Continuity)
+        byte[] signature = this.sign(newPubKeyBytes);
+
+        // 3. Swap the keys in memory
+        this.publicKey = newPubKey;
+        this.privateKey = newPrivKey;
+
+        // 4. Save the new keys to the hard drive (This overwrites the old encrypted key files)
+        // Note: Assuming you have a method like saveKeys() or similar inside your class that handles the file writing.
+        // If your file writing logic is inside loadOrGenerate(), you might need to extract it into a saveKeys(password) method!
+        this.saveKeys(password); 
+
+        // 5. Encode them to Base64 so they can be sent in the JSON network message
+        String newKeyB64 = java.util.Base64.getEncoder().encodeToString(newPubKeyBytes);
+        String sigB64 = java.util.Base64.getEncoder().encodeToString(signature);
+
+        System.out.println("[+] Key migration successful. Old keys destroyed.");
+        
+        return new String[]{newKeyB64, sigB64};
     }
 }
