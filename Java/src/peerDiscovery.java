@@ -32,16 +32,37 @@ public class PeerDiscovery {
 
     public static void main(String[] args) throws Exception {
         final int PORT = (args.length > 1) ? Integer.parseInt(args[1]) : 5000;
-        Console console = System.console();
-        char[] password = console.readPassword("Enter password for this session: ");
-
         String myName = (args.length > 0) ? args[0] : "Bob_java";
 
+        System.out.println("=== Starting P2P Node for " + myName + " ===");
+
+        // Secure password prompt (handling IDE fallback just in case)
+        Console console = System.console();
+        char[] password;
+        if (console != null) {
+            password = console.readPassword("Enter your Master Password (used for Identity & Vault): ");
+        } else {
+            System.out.print("Enter your Master Password (used for Identity & Vault): ");
+            Scanner scanner = new Scanner(System.in);
+            password = scanner.nextLine().toCharArray();
+        }
+
+        // 1. Initialize Identity
         IdentityManager identity = new IdentityManager(myName);
         identity.loadOrGenerate(password);
 
+        // 2. Initialize and Unlock FileManager (Vault)
+        FileManager fileManager = new FileManager(myName);
+        fileManager.unlockVault(password);
+
+        // Clear the password from memory now that both modules have used it
         Arrays.fill(password, '\0');
 
+        // 3. The Magic Cleanup Hook
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            System.out.println("\n[*] Emergency shutdown detected. Locking vault...");
+            fileManager.lockVaultAndCleanup();
+        }));
 
         System.out.println("Step 1: getting local address...");
         InetAddress localAddress = getLocalNetworkAddress();
@@ -58,7 +79,7 @@ public class PeerDiscovery {
         System.out.println("Registered as: " + myName);
 
         NetworkManager network = new NetworkManager(PORT, identity, myName);
-        FileManager fileManager = new FileManager(myName);
+        // Note: FileManager is already initialized at the top now!
         MessageDispatcher dispatcher = new MessageDispatcher(network, identity, myName, fileManager);
         network.setDispatcher(dispatcher);
         network.startServer();
@@ -71,7 +92,8 @@ public class PeerDiscovery {
                     try { Thread.sleep(1000); } catch (InterruptedException e) {}
                     jmdns.requestServiceInfo(event.getType(), event.getName());
                 }).start();
-}
+            }
+
             public void serviceResolved(ServiceEvent event) {
                 if (event.getName().equals(myName)) return;
                 String address = event.getInfo().getHostAddresses()[0];
@@ -87,6 +109,7 @@ public class PeerDiscovery {
                 System.out.println("\n[+] Peer found: " + peerId + " @ " + address + ":" + peerPort);
                 System.out.print(myName + " > ");
             }
+
             public void serviceRemoved(ServiceEvent event) {
                 byte[] userIdProp = event.getInfo() != null ? event.getInfo().getPropertyBytes("user_id") : null;
                 String peerId = userIdProp != null ? new String(userIdProp) : event.getName().split("\\.")[0];
@@ -120,6 +143,8 @@ public class PeerDiscovery {
                     System.out.println("chat         | Send encrypted message to a peer");
                     System.out.println("fetch        | Request file list from a peer");
                     System.out.println("request      | Request a file from a peer");
+                    System.out.println("send         | Offer a file to a peer");
+                    System.out.println("import       | Move files from staging to vault");
                     System.out.println("exit         | Shut down");
                     break;
 
@@ -132,6 +157,11 @@ public class PeerDiscovery {
                             System.out.println(" > " + entry.getKey() + " [" + entry.getValue()[0] + ":" + entry.getValue()[1] + "] " + sessionStatus);
                         }
                     }
+                    break;
+
+                case "import":
+                    System.out.println("[*] Importing files from staging area to vault...");
+                    fileManager.importFromStaging();
                     break;
 
                 case "connect":

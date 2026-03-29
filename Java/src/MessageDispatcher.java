@@ -315,10 +315,10 @@ public class MessageDispatcher {
             }
 
             //save the file to downloads folder
-            Files.write(Paths.get("data_" + myName + "/downloads/" + fileName), decryptedData);
-            System.out.println("[+] Received file '" + fileName + "' from " + sender + " (saved to downloads folder)");
+            fileManager.saveIncomingFile(fileName, decryptedData);
+            System.out.println("\n[+] Received and secured file: " + fileName);
         } catch (Exception e) {
-            System.out.println("[-] Failed to process TRANSFER_REQUEST from " + sender + ": " + e.getMessage());
+            System.out.println("[-] Failed to process TRANSFER_ACCEPT from " + sender + ": " + e.getMessage());
         }
     }
 
