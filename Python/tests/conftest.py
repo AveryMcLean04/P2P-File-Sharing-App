@@ -1,78 +1,70 @@
 import pytest
 import os
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+project_root = str(Path(__file__).resolve().parent.parent)
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 @pytest.fixture
 def mock_app(tmp_path):
     """
-    Sets up a fully mocked SecureP2PApp instance.
-    Uses a temporary directory for all filesystem operations.
+    Creates a mocked version of the SecureP2PApp with all major subsystems 
+    replaced by MagicMocks to isolate logic, storage, and CLI tests.
     """
-    user_id = "TestUser"
-    port = 5005
-    
-    # Path setup for the mock app
     data_dir = tmp_path / "data"
     shared_dir = tmp_path / "shared"
     vault_dir = tmp_path / "vault"
     
-    # We patch the components in 'main' (or wherever SecureP2PApp is defined)
-    # so that initialization doesn't trigger real network/disk activity.
-    with patch('main.MDNSHandler'), \
-         patch('main.NetworkManager'), \
-         patch('main.AppConfig') as MockConfig, \
-         patch('main.AuthManager') as MockAuth:
+    import main
+
+    with patch('network.mdns_handler.MDNSHandler'), \
+         patch('network.connection.NetworkManager'), \
+         patch('ui.cli.AppCLI'), \
+         patch('config.AppConfig') as MockConfig, \
+         patch('authentication.auth_manager.AuthManager') as MockAuth, \
+         patch('logic.peer_logic.PeerLogic') as MockLogic, \
+         patch('crypto.secure_disk_store.SecureDiskStore') as MockDisk:
         
-        # 1. Setup Mock Config
         instance_config = MockConfig.return_value
-        instance_config.user_id = user_id
-        instance_config.port = port
-        instance_config.password = "password123"
-        instance_config.initialize_directories.return_value = (
-            data_dir, shared_dir, vault_dir
-        )
+        instance_config.user_id = "TestUser"
+        instance_config.port = 5005
+        instance_config.initialize_directories.return_value = (data_dir, shared_dir, vault_dir)
         
-        # 2. Import and Initialize App
-        from main import SecureP2PApp
-        app = SecureP2PApp(user_id=user_id, port=port)
+        app = main.SecureP2PApp(user_id="TestUser", port=5005)
+        app.log = MagicMock()
         
-        # 3. Setup Mock AuthManager
         app.auth_manager = MockAuth.return_value
-        
-        app.auth_manager.generate_ephemeral_pair.return_value = (b"fake_priv", b"fake_pub")
-        
-        app.auth_manager.sign.return_value = b"fake_signature"
         app.auth_manager.get_public_key.return_value = b"A" * 32
-        
-        app.auth_manager.local_encryptor = MagicMock()
-        app.auth_manager.local_encryptor.encrypt.return_value = b"encrypted_data"
-        app.auth_manager.local_encryptor.decrypt.return_value = b"decrypted_data"
+        app.auth_manager.unlock_vault.return_value = True
         app.auth_manager.pending_handshakes = {}
         
-        # 4. Setup Mock Network/Discovery
+        app.logic = MockLogic.return_value
+        
+        app.disk_store = MockDisk.return_value
+        app.disk_store.list_encrypted_files.return_value = []
+        
+        app.awaiting_consent = False
+        app.pending_transfer = None
         app.network = MagicMock()
         app.discovery = MagicMock()
         app.discovery.peers = {}
-        
-        # 5. Additional State needed for Logic tests
         app.active_sessions = {}
-        app.awaiting_consent = False
-        app.pending_transfer = None
         
         yield app
 
 @pytest.fixture
 def secure_session(mock_app):
     """
-    A helper fixture that injects a pre-established 
-    secure session with a peer named 'Bob'.
+    Helper fixture that sets up a mock 'Bob' who has already completed 
+    a handshake, allowing for testing of encrypted chat and file transfers.
     """
     sender = "Bob"
     mock_encryptor = MagicMock()
     
-    # Define standard behavior for the session encryptor
-    mock_encryptor.encrypt.side_effect = lambda x: b"enc_" + x
+    mock_encryptor.encrypt.side_effect = lambda x: b"enc_" + (x.encode() if isinstance(x, str) else x)
     mock_encryptor.decrypt.side_effect = lambda x: x.replace(b"enc_", b"")
     
     mock_app.active_sessions[sender] = {
@@ -80,4 +72,5 @@ def secure_session(mock_app):
         "encryptor": mock_encryptor,
         "peer_identity": b"B" * 32
     }
+    
     return mock_app, sender

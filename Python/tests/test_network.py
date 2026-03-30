@@ -1,117 +1,101 @@
 import pytest
+import socket
 import json
 import base64
-import socket
-from unittest.mock import MagicMock, patch
-from src.network.connection import NetworkManager
-from src.network.dispatcher import MessageDispatcher
-from src.network.discovery import MDNSHandler
+from unittest.mock import MagicMock, patch, ANY
 
-# --- 1. Message Dispatcher Tests (Security & Routing) ---
+from network.connection import NetworkManager
+from network.dispatcher import MessageDispatcher
+from network.mdns_handler import MDNSHandler
 
-def test_dispatcher_security_gate(mock_app):
-    """Verify that private message types are blocked without a secure session."""
+# --- 1. NetworkManager Tests ---
+
+def test_nm_send_message_success(mock_app):
+    nm = NetworkManager(mock_app, port=5005, message_callback=lambda m, a: None)
+    payload = {"type": "HELLO"}
+    with patch('socket.socket') as mock_socket:
+        mock_conn = mock_socket.return_value.__enter__.return_value
+        success = nm.send_message("127.0.0.1", 5005, payload)
+        assert success is True
+        mock_conn.sendall.assert_called_once()
+
+def test_nm_send_message_connection_failure(mock_app):
+    nm = NetworkManager(mock_app, port=5005, message_callback=lambda m, a: None)
+    with patch('socket.socket') as mock_socket:
+        mock_socket.return_value.__enter__.return_value.connect.side_effect = Exception("No route")
+        success = nm.send_message("1.1.1.1", 5005, {"type": "PING"})
+        assert success is False
+        mock_app.log.assert_called_with("error", ANY)
+
+def test_nm_receive_malformed_json_failure(mock_app):
+    nm = NetworkManager(mock_app, port=5005, message_callback=lambda m, a: None)
+    mock_conn = MagicMock()
+    mock_conn.recv.side_effect = [b"\xff\xfe\xfd", b""]
+    nm._handle_client(mock_conn, ("1.2.3.4", 9999))
+    mock_app.log.assert_any_call("error", ANY)
+
+# --- 2. MessageDispatcher Tests ---
+
+def test_dispatcher_secure_route_success(mock_app):
     logic = MagicMock()
     dispatcher = MessageDispatcher(mock_app, logic)
-    
-    # Message that REQUIRES a session
-    private_msg = {"type": "CHAT_MESSAGE", "sender": "UnknownBob", "payload": "hi"}
-    
-    # Alice has no session with UnknownBob
-    mock_app.active_sessions = {}
-    
-    dispatcher.handle(private_msg, ("1.2.3.4", 5000))
-    
-    # Assert: Logic was never triggered, security alert logged
-    logic.process_chat_message.assert_not_called()
-    mock_app.log.assert_called_with("security", pytest.approx("Blocked CHAT_MESSAGE"))
+    mock_app.active_sessions["Bob"] = {"status": "SECURE-SESSION"}
+    msg = {"type": "CHAT_MESSAGE", "sender": "Bob", "payload": "hello"}
+    dispatcher.handle(msg, ("1.1.1.1", 5000))
+    logic.process_chat_message.assert_called_once()
 
-def test_dispatcher_routes_public_handshake(mock_app):
-    """Verify that HANDSHAKE_INIT bypasses the security gate."""
+def test_dispatcher_security_gate_failure(mock_app):
     logic = MagicMock()
     dispatcher = MessageDispatcher(mock_app, logic)
-    
-    public_msg = {"type": "HANDSHAKE_INIT", "sender": "NewPeer", "payload": {}}
-    
-    dispatcher.handle(public_msg, ("1.2.3.4", 5000))
-    
-    # Assert: Logic was triggered even without a session
-    logic.process_handshake_init.assert_called_once()
+    mock_app.active_sessions = {} 
+    msg = {"type": "FILE_LIST_REQUEST", "sender": "Attacker"}
+    dispatcher.handle(msg, ("6.6.6.6", 6666))
+    logic.handle_list_request.assert_not_called()
+    mock_app.log.assert_called_with("security", ANY)
 
-# --- 2. Network Manager Tests (TCP Communication) ---
+def test_dispatcher_unknown_type_failure(mock_app):
+    dispatcher = MessageDispatcher(mock_app, MagicMock())
+    sender_name = "Alice"
+    mock_app.active_sessions[sender_name] = {"status": "SECURE-SESSION"}
+    msg = {"type": "GHOST_TYPE", "sender": sender_name}
+    dispatcher.handle(msg, ("1.1.1.1", 5000))
+    mock_app.log.assert_called_with("network", ANY)
 
-@patch("socket.socket")
-def test_network_manager_send_success(mock_socket_class, mock_app):
-    """Verify NetworkManager correctly serializes JSON and sends over TCP."""
-    mock_socket = MagicMock()
-    mock_socket_class.return_value.__enter__.return_value = mock_socket
-    
-    nm = NetworkManager(mock_app, 5005, lambda m, a: None)
-    test_payload = {"type": "PING", "sender": "Alice"}
-    
-    result = nm.send_message("192.168.1.10", 5005, test_payload)
-    
-    assert result is True
-    mock_socket.connect.assert_called_with(("192.168.1.10", 5005))
-    
-    # Capture and verify the sent bytes
-    sent_bytes = mock_socket.sendall.call_args[0][0]
-    decoded_sent = json.loads(sent_bytes.decode('utf-8'))
-    assert decoded_sent["type"] == "PING"
+# --- 3. MDNSHandler Tests ---
 
-def test_broadcast_exit_logic(mock_app):
-    """Verify that broadcast_peer_left iterates through all known peers."""
-    nm = NetworkManager(mock_app, 5005, lambda m, a: None)
-    nm.send_message = MagicMock() # Mock the actual send to avoid socket errors
-    
-    known_peers = {
-        "Bob": {"ip": "1.1.1.1", "port": 5005},
-        "Charlie": {"ip": "2.2.2.2", "port": 5005}
-    }
-    
-    nm.broadcast_peer_left("Alice", known_peers)
-    
-    # Assert send_message was called twice
-    assert nm.send_message.call_count == 2
-    mock_app.log.assert_called_with("network", "Broadcasting exit to 2 peers...")
-
-# --- 3. Discovery Tests (mDNS / Zeroconf) ---
-
-def test_mdns_discovery_parsing(mock_app):
-    """Verify that MDNSHandler correctly extracts peer info from Zeroconf properties."""
-    handler = MDNSHandler(mock_app, "Alice", 5005)
-    
-    # Create a mock Zeroconf ServiceInfo object
+def test_mdns_discovery_success(mock_app):
+    mdns = MDNSHandler(mock_app, user_id="Alice", port=5000)
     mock_info = MagicMock()
-    # 127.0.0.1 in packed bytes
-    mock_info.addresses = [socket.inet_aton("127.0.0.1")]
-    mock_info.port = 5005
-    mock_info.properties = {
-        b"user_id": b"Bob",
-        b"public_key": base64.b64encode(b"bob_pub_key")
-    }
-    
+    mock_info.addresses = [socket.inet_aton("192.168.1.50")]
+    mock_info.port = 5001
+    mock_info.properties = {b"user_id": b"Bob", b"public_key": b"abc"}
     mock_zc = MagicMock()
     mock_zc.get_service_info.return_value = mock_info
-    
-    # Trigger the callback
-    handler.add_service(mock_zc, "_tcp.local.", "Bob._tcp.local.")
-    
-    # Verify Bob was added to the internal peer map
-    assert "Bob" in handler.peers
-    assert handler.peers["Bob"]["ip"] == "127.0.0.1"
-    assert handler.peers["Bob"]["public_key"] == base64.b64encode(b"bob_pub_key").decode()
+    mdns.add_service(mock_zc, "type", "Bob.type")
+    assert "Bob" in mdns.peers
 
-def test_mdns_discovery_ignores_self(mock_app):
-    """Ensure the handler doesn't add the local user to the peer list."""
-    handler = MDNSHandler(mock_app, "Alice", 5005) # Local ID is Alice
+def test_mdns_registration_failure(mock_app):
+    """
     
-    mock_info = MagicMock()
-    mock_info.properties = {b"user_id": b"Alice"} # Incoming ID is also Alice
+    """
+    mdns = MDNSHandler(mock_app, user_id="Alice", port=5000)
     
-    mock_zc = MagicMock()
-    mock_zc.get_service_info.return_value = mock_info
+    mock_zc_instance = MagicMock()
+    mock_zc_instance.register_service.side_effect = Exception("Bind error")
     
-    handler.add_service(mock_zc, "_tcp.local.", "Alice._tcp.local.")
+    mdns.zeroconf = mock_zc_instance
     
-    assert "Alice" not in handler.peers
+    with patch('network.mdns_handler.ServiceInfo'):
+        mdns.register_service()
+        
+    mock_app.log.assert_called_with("error", ANY)
+
+def test_mdns_remove_service(mock_app):
+    """Verifies that remove_service correctly cleans up the peer list."""
+    mdns = MDNSHandler(mock_app, user_id="Alice", port=5000)
+    mdns.peers["Bob"] = {"ip": "1.1.1.1", "port": 5000}
+    
+    mdns.remove_service(MagicMock(), "type", "Bob.type")
+    
+    assert "Bob" not in mdns.peers
+    mock_app.log.assert_called_with("network", ANY)

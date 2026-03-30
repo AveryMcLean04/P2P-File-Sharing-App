@@ -40,7 +40,7 @@ class AppCLI:
         """Prints the command table."""
         print(f"\n{'COMMAND':<12} | {'DESCRIPTION'}")
         print("-" * 52)
-        for cmd, info in sorted(self.commands.items()):
+        for cmd, info in self.commands.items():
             print(f"{cmd:<12} | {info['desc']}")
 
     def _require_session(self, target: str) -> bool:

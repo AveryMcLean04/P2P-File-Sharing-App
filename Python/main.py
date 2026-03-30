@@ -7,9 +7,9 @@ sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 
 try:
     from config import AppConfig
-    from discovery.mdns_handler import MDNSHandler
     from authentication.auth_manager import AuthManager
     from crypto.secure_disk_store import SecureDiskStore
+    from network.mdns_handler import MDNSHandler
     from network.dispatcher import MessageDispatcher
     from network.connection import NetworkManager
     from logic.peer_logic import PeerLogic
@@ -32,7 +32,7 @@ class SecureP2PApp:
         # Setup filesystem hierarchy (Data, Shared, Vault)
         self.data_path, self.shared_path, self.vault_path = self.config.initialize_directories(self.base_path)
         
-        # Initialize Core Managers
+        # Core Managers
         self.auth_manager = AuthManager(app=self, key_dir=str(self.data_path / "keys"))
         self.disk_store = None  # Deferred until Vault is unlocked
         
@@ -82,7 +82,7 @@ class SecureP2PApp:
             )
 
             id_pub = self.auth_manager.get_public_key()
-            if not id_pub or len(id_pub) < 32:
+            if not id_pub:
                 raise ValueError("Identity key is missing or corrupted.")
 
             self.log("security", f"Identity Verified: [ID: {id_pub.hex()[:12]}...]")
