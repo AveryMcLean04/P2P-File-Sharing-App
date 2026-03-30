@@ -17,8 +17,11 @@ public class PeerDiscovery {
     static final String SERVICE_TYPE = "_cisc468secshare._tcp.local.";
 
     static final Map<String, String[]> activePeers = new ConcurrentHashMap<>();
-    // ADDED: tracks pending incoming transfer requests waiting for accept/reject
     static final Map<String, String[]> pendingTransfers = new ConcurrentHashMap<>();
+    
+    static final Map<String, String[]> pendingOffers = new ConcurrentHashMap<>();
+
+    static String autoApproveFile = null;
 
     static InetAddress getLocalNetworkAddress() throws Exception {
         try (DatagramSocket socket = new DatagramSocket()) {
@@ -29,16 +32,37 @@ public class PeerDiscovery {
 
     public static void main(String[] args) throws Exception {
         final int PORT = (args.length > 1) ? Integer.parseInt(args[1]) : 5000;
-        Console console = System.console();
-        char[] password = console.readPassword("Enter password for this session: ");
-
         String myName = (args.length > 0) ? args[0] : "Bob_java";
 
+        System.out.println("=== Starting P2P Node for " + myName + " ===");
+
+        // Secure password prompt (handling IDE fallback just in case)
+        Console console = System.console();
+        char[] password;
+        if (console != null) {
+            password = console.readPassword("Enter your Master Password (used for Identity & Vault): ");
+        } else {
+            System.out.print("Enter your Master Password (used for Identity & Vault): ");
+            Scanner scanner = new Scanner(System.in);
+            password = scanner.nextLine().toCharArray();
+        }
+
+        // 1. Initialize Identity
         IdentityManager identity = new IdentityManager(myName);
         identity.loadOrGenerate(password);
 
+        // 2. Initialize and Unlock FileManager (Vault)
+        FileManager fileManager = new FileManager(myName);
+        fileManager.unlockVault(password);
+
+        // Clear the password from memory now that both modules have used it
         Arrays.fill(password, '\0');
 
+        // 3. The Magic Cleanup Hook
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            System.out.println("\n[*] Emergency shutdown detected. Locking vault...");
+            fileManager.lockVaultAndCleanup();
+        }));
 
         System.out.println("Step 1: getting local address...");
         InetAddress localAddress = getLocalNetworkAddress();
@@ -50,12 +74,12 @@ public class PeerDiscovery {
         Map<String, String> props = new HashMap<>();
         props.put("user_id", myName);
         props.put("public_key", pubKeyBase64);
-        ServiceInfo info = ServiceInfo.create(SERVICE_TYPE, myName + "." + SERVICE_TYPE, PORT, 0, 0, props);
+        ServiceInfo info = ServiceInfo.create(SERVICE_TYPE, myName, PORT, 0, 0, props);
         jmdns.registerService(info);
         System.out.println("Registered as: " + myName);
 
         NetworkManager network = new NetworkManager(PORT, identity, myName);
-        FileManager fileManager = new FileManager(myName);
+        // Note: FileManager is already initialized at the top now!
         MessageDispatcher dispatcher = new MessageDispatcher(network, identity, myName, fileManager);
         network.setDispatcher(dispatcher);
         network.startServer();
@@ -68,22 +92,43 @@ public class PeerDiscovery {
                     try { Thread.sleep(1000); } catch (InterruptedException e) {}
                     jmdns.requestServiceInfo(event.getType(), event.getName());
                 }).start();
-}
-            public void serviceResolved(ServiceEvent event) {
-                if (event.getName().equals(myName)) return;
-                String address = event.getInfo().getHostAddresses()[0];
-                int peerPort = event.getInfo().getPort();
-
-                byte[] pubKeyProp = event.getInfo().getPropertyBytes("public_key");
-                String peerPubKey = pubKeyProp != null ? new String(pubKeyProp) : null;
-
-                byte[] userIdProp = event.getInfo().getPropertyBytes("user_id");
-                String peerId = userIdProp != null ? new String(userIdProp) : event.getName().split("\\.")[0];
-
-                activePeers.put(peerId, new String[]{address, String.valueOf(peerPort), peerPubKey});
-                System.out.println("\n[+] Peer found: " + peerId + " @ " + address + ":" + peerPort);
-                System.out.print(myName + " > ");
             }
+
+            public void serviceResolved(ServiceEvent event) {
+                try {
+                    // Ignore our own broadcast
+                    if (event.getName().equals(myName)) return;
+
+                    // 1. DEFENSIVE CHECK: Did JmDNS actually find the IP?
+                    String[] addresses = event.getInfo().getHostAddresses();
+                    if (addresses == null || addresses.length == 0) {
+                        // If it fails, we just wait. Our retry thread in serviceAdded will trigger this again!
+                        // System.out.println("[-] Debug: Found " + event.getName() + " but waiting for IP address...");
+                        return; 
+                    }
+                    
+                    String address = addresses[0];
+                    int peerPort = event.getInfo().getPort();
+
+                    // 2. Safely extract properties
+                    byte[] pubKeyProp = event.getInfo().getPropertyBytes("public_key");
+                    String peerPubKey = pubKeyProp != null ? new String(pubKeyProp) : null;
+
+                    byte[] userIdProp = event.getInfo().getPropertyBytes("user_id");
+                    String peerId = userIdProp != null ? new String(userIdProp) : event.getName().split("\\.")[0];
+
+                    // 3. Add to our active list
+                    activePeers.put(peerId, new String[]{address, String.valueOf(peerPort), peerPubKey});
+                    System.out.println("\n[+] Peer found: " + peerId + " @ " + address + ":" + peerPort);
+                    System.out.print(myName + " > ");
+                    
+                } catch (Exception e) {
+                    // If anything else goes wrong, don't fail silently! Tell us!
+                    System.out.println("\n[-] Network resolution error for " + event.getName() + ": " + e.getMessage());
+                    System.out.print(myName + " > ");
+                }
+            }
+
             public void serviceRemoved(ServiceEvent event) {
                 byte[] userIdProp = event.getInfo() != null ? event.getInfo().getPropertyBytes("user_id") : null;
                 String peerId = userIdProp != null ? new String(userIdProp) : event.getName().split("\\.")[0];
@@ -117,6 +162,9 @@ public class PeerDiscovery {
                     System.out.println("chat         | Send encrypted message to a peer");
                     System.out.println("fetch        | Request file list from a peer");
                     System.out.println("request      | Request a file from a peer");
+                    System.out.println("send         | Offer a file to a peer");
+                    System.out.println("import       | Move files from staging to vault");
+                    System.out.println("migrate      | Migrate Keys");
                     System.out.println("exit         | Shut down");
                     break;
 
@@ -130,6 +178,56 @@ public class PeerDiscovery {
                         }
                     }
                     break;
+
+                case "import":
+                    System.out.println("[*] Importing files from staging area to vault...");
+                    fileManager.importFromStaging();
+                    break;
+                
+                case "migrate":
+                    System.out.println("\n[!] KEY MIGRATION WARNING");
+                    System.out.println("This will destroy your current Identity Key and generate a new one.");
+                    System.out.println("Your peers will be notified securely.");
+                    
+                    char[] migPassword;
+                    if (System.console() != null) {
+                        migPassword = System.console().readPassword("Enter your Master Password to authorize: ");
+                    } else {
+                        System.out.print("Enter your Master Password to authorize: ");
+                        migPassword = scanner.nextLine().toCharArray();
+                    }
+
+                    try {
+                        // 1. Generate new keys, sign them, and save to disk
+                        String[] migrationData = identity.migrateKey(migPassword);
+                        String newKeyB64 = migrationData[0];
+                        String sigB64 = migrationData[1];
+
+                        // 2. Clear the password from RAM
+                        java.util.Arrays.fill(migPassword, '\0');
+
+                        // 3. Build the JSON payload to prove continuity
+                        String payload = "{" +
+                            "\"new_identity_key\":\"" + newKeyB64 + "\"," +
+                            "\"signature\":\"" + sigB64 + "\"" +
+                        "}";
+                        String msg = "{\"type\":\"KEY_MIGRATION_NOTIFY\",\"sender\":\"" + myName + "\",\"payload\":" + payload + "}";
+
+                        // 4. Broadcast the update to all active peers
+                        if (activePeers.isEmpty()) {
+                            System.out.println("[*] Key migrated locally. No active peers to notify.");
+                        } else {
+                            for (Map.Entry<String, String[]> entry : activePeers.entrySet()) {
+                                String[] peer = entry.getValue();
+                                network.sendMessage(peer[0], Integer.parseInt(peer[1]), msg);
+                            }
+                            System.out.println("[+] Migration broadcasted to all active peers.");
+                        }
+                    } catch (Exception e) {
+                        System.out.println("[-] Migration failed: " + e.getMessage());
+                    }
+                    break;
+
 
                 case "connect":
                     if (activePeers.isEmpty()) {
@@ -193,6 +291,41 @@ public class PeerDiscovery {
                     jmdns.close();
                     System.exit(0);
                     break;
+                case "send": {
+                    System.out.print("Send file to: ");
+                    String sendTarget = scanner.nextLine().trim();
+                    if (!activePeers.containsKey(sendTarget)) {
+                        System.out.println("[-] Peer '" + sendTarget + "' not found.");
+                        break;
+                    }
+                    if (!network.hasSession(sendTarget)) {
+                        System.out.println("[-] No secure session with " + sendTarget + ". Run 'connect' first.");
+                        break;
+                    }
+                    
+                    System.out.print("Filename to send: ");
+                    String sendFileName = scanner.nextLine().trim();
+                    
+                    // 1. Check if the file actually exists before we offer it
+                    java.nio.file.Path filePath = java.nio.file.Paths.get("data_" + myName + "/shared/" + sendFileName);
+                    if (!java.nio.file.Files.exists(filePath)) {
+                        System.out.println("[-] Error: File '" + sendFileName + "' not found in your shared folder.");
+                        break;
+                    }
+
+                    try {
+                        // Flag this file so we auto-send it when they request it!
+                        autoApproveFile = sendFileName; 
+                        
+                        String[] peer = activePeers.get(sendTarget);
+                        String msg = "{\"type\":\"PUSH_PROPOSAL\",\"sender\":\"" + myName + "\",\"payload\":{\"filename\":\"" + sendFileName + "\"}}";
+                        network.sendMessage(peer[0], Integer.parseInt(peer[1]), msg);
+                        System.out.println("[*] Offered '" + sendFileName + "' to " + sendTarget + ". Waiting for them to accept...");
+                    } catch (Exception e) {
+                        System.out.println("[-] Send offer failed: " + e.getMessage());
+                    }
+                    break;
+                }
 
                 case "request":
                     System.out.print("Request file from: ");
@@ -220,53 +353,34 @@ public class PeerDiscovery {
                     break;
                 case "y":
                 case "yes": {
-                    if (pendingTransfers.isEmpty()) {
-                        System.out.println("[-] No pending transfers to approve.");
+                    // Scenario A: We are accepting an incoming OFFER (Push)
+                    if (!pendingOffers.isEmpty()) {
+                        Map.Entry<String, String[]> entry = pendingOffers.entrySet().iterator().next();
+                        String sender = entry.getKey();
+                        String fileName = entry.getValue()[0];
+                        pendingOffers.remove(sender);
+        
+                        // Tell Alice we want it by sending a standard TRANSFER_REQUEST
+                        String[] peer = activePeers.get(sender);
+                        String msg = "{\"type\":\"TRANSFER_REQUEST\",\"sender\":\"" + myName + "\",\"payload\":{\"filename\":\"" + fileName + "\"}}";
+                        network.sendMessage(peer[0], Integer.parseInt(peer[1]), msg);
+                        System.out.println("[*] Offer accepted. Requesting '" + fileName + "' from " + sender + "...");
                         break;
                     }
-                    // Grab the first pending request from the map
-                    Map.Entry<String, String[]> entry = pendingTransfers.entrySet().iterator().next();
-                    String requester = entry.getKey();
-                    String fileName = entry.getValue()[0];
-                    pendingTransfers.remove(requester);
-
-                    try {
-                        // 1. Read the file from your local shared folder
-                        java.nio.file.Path filePath = java.nio.file.Paths.get("data_" + myName + "/shared/" + fileName);
-                        if (!java.nio.file.Files.exists(filePath)) {
-                            System.out.println("[-] Error: File '" + fileName + "' not found in your shared folder.");
-                            break;
-                        }
-                        byte[] fileData = java.nio.file.Files.readAllBytes(filePath);
-
-                        // 2. Hash the file for integrity (Requirement 5)
-                        byte[] hashBytes = java.security.MessageDigest.getInstance("SHA-256").digest(fileData);
-                        String fileHash = org.bouncycastle.util.encoders.Hex.toHexString(hashBytes);
-
-                        // 3. Sign the hash to prove it came from you (Requirement 2 & 11)
-                        byte[] signature = identity.sign(fileHash.getBytes("UTF-8"));
-
-                        // 4. Encrypt the file using the secure session key (Requirement 7)
-                        SessionManager session = network.getSession(requester);
-                        byte[] encryptedFile = session.encrypt(fileData);
-
-                        // 5. Build and send the TRANSFER_ACCEPT JSON payload
-                        String[] peerInfo = activePeers.get(requester);
-                        if (peerInfo != null) {
-                            String payload = "{" +
-                                "\"filename\":\"" + fileName + "\"," +
-                                "\"data\":\"" + Base64.getEncoder().encodeToString(encryptedFile) + "\"," +
-                                "\"sha256\":\"" + fileHash + "\"," +
-                                "\"signature\":\"" + Base64.getEncoder().encodeToString(signature) + "\"" +
-                            "}";
-                            String msg = "{\"type\":\"TRANSFER_ACCEPT\",\"sender\":\"" + myName + "\",\"payload\":" + payload + "}";
-                            
-                            network.sendMessage(peerInfo[0], Integer.parseInt(peerInfo[1]), msg);
-                            System.out.println("[+] File '" + fileName + "' encrypted and sent to " + requester + "!");
-                        }
-                    } catch (Exception e) {
-                        System.out.println("[-] Failed to send file: " + e.getMessage());
+    
+                    // Scenario B: We are approving an incoming REQUEST (Pull)
+                    if (!pendingTransfers.isEmpty()) {
+                        Map.Entry<String, String[]> entry = pendingTransfers.entrySet().iterator().next();
+                        String requester = entry.getKey();
+                        String fileName = entry.getValue()[0];
+                        pendingTransfers.remove(requester);
+        
+                        // Use our dispatcher helper to send the data
+                        dispatcher.executeApprovedTransfer(requester, fileName);
+                        break;
                     }
+    
+                    System.out.println("[-] No pending transfers or offers to approve.");
                     break;
                 }
 

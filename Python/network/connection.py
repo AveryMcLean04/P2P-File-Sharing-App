@@ -80,20 +80,19 @@ class NetworkManager:
             except Exception as e:
                 self.app.log("error", f"Error handling client {addr}: {e}")
 
-    def send_message(self, ip: str, port: int, message_dict: Dict[str, Any]) -> bool:
-        """
-        Sends a JSON-encoded message to a specific peer.
-        
-        :param ip: Destination IP address.
-        :param port: Destination Port.
-        :param message_dict: The dictionary to be serialized and sent.
-        :return: True if sent successfully, False otherwise.
-        """
+    def send_message(self, ip: str, port: int, message_dict_or_str: Any) -> bool:
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.settimeout(10.0)
                 s.connect((ip, port))
-                s.sendall(json.dumps(message_dict).encode('utf-8'))
+                
+                # If it's already a string, just encode it. If it's a dict, use json.dumps.
+                if isinstance(message_dict_or_str, str):
+                    data = message_dict_or_str.encode('utf-8')
+                else:
+                    data = json.dumps(message_dict_or_str).encode('utf-8')
+                    
+                s.sendall(data)
                 return True
         except Exception:
             self.app.log("error", f"Failed to send message to {ip}:{port}")

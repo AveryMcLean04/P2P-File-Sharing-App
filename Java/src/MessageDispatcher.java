@@ -54,22 +54,43 @@ public class MessageDispatcher {
                 case "FILE_LIST_RESPONSE":
                     handleFileListResponse(sender, json);
                     break;
+                case "PUSH_PROPOSAL":
+                    String pushPayload = extractPayload(json);
+                    String pushFile = extractField(pushPayload, "filename"); 
+                    System.out.println("\n[!] INCOMING FILE OFFER: " + sender + " wants to send you '" + pushFile + "'.");
+                    System.out.print("Accept transfer? (y/n) > ");
+                    PeerDiscovery.pendingOffers.put(sender, new String[]{pushFile});
+                    break;
                 case "TRANSFER_REQUEST":
-                    // Alice is asking permission to send (Requirement 3)
                     String reqPayload = extractPayload(json);
                     String reqFile = extractField(reqPayload, "filename"); 
-                    System.out.println("\n[!] CONSENT REQUIRED: " + sender + " wants to send you '" + reqFile + "'.");
-                    System.out.print("Accept transfer? (y/n) > ");
-                    PeerDiscovery.pendingTransfers.put(sender, new String[]{reqFile});
+    
+                    if (reqFile.equals(PeerDiscovery.autoApproveFile)) {
+                        System.out.println("\n[*] Auto-approving request for '" + reqFile + "' (previously offered).");
+                        PeerDiscovery.autoApproveFile = null;
+                        executeApprovedTransfer(sender, reqFile);
+                    } else {
+                        System.out.println("\n[!] CONSENT REQUIRED: " + sender + " wants to download '" + reqFile + "' from you.");
+                        System.out.print("Allow? (y/n) > ");
+                        PeerDiscovery.pendingTransfers.put(sender, new String[]{reqFile});
+                    }
                     break;
                 case "TRANSFER_ACCEPT":
                     handleTransferAccept(sender, json);
                     break;
-                case "PEER_LEFT":
-                    PeerDiscovery.activePeers.remove(sender);
-                    network.removeSession(sender);
-                    System.out.println("\n[-] " + sender + " left the network.");
+                case "OFFER_ACCEPT":
+                    handleOfferAccept(sender, json);
+                    break;
+                case "KEY_MIGRATION_NOTIFY":
+                    System.out.println("\n[!] " + sender + " has migrated to a new identity. Previous sessions are now invalid.");
+                    handleKeyMigration(sender, json);
+                    break;
+                case "OFFER_REJECT":
+                    System.out.println("\n[-] " + sender + " declined your file offer.");
                     System.out.print(myName + " > ");
+                    break;
+                case "PEER_LEFT":
+                    handlePeerLeft(sender);
                     break;
                 default:
                     System.out.println("[-] Unknown message type '" + type + "' from " + sender);
@@ -79,15 +100,11 @@ public class MessageDispatcher {
         }
     }
 
-    // CHANGED: was reading ephemeral key from mDNS — now reads identity_key and ephemeral_share
-    // from the payload, matching Python's HANDSHAKE_INIT field names exactly.
     private void handleHandshakeInit(String sender, String json) {
         try {
             String payload        = extractPayload(json);
-            // CHANGED: Python sends "ephemeral_share" not "ephemeral_key"
             byte[] peerEphemeral  = Base64.getDecoder().decode(extractField(payload, "ephemeral_share"));
             byte[] peerSig        = Base64.getDecoder().decode(extractField(payload, "signature"));
-            // CHANGED: read identity key from payload instead of mDNS (Python peers don't put it in mDNS)
             byte[] peerIdentityKey = Base64.getDecoder().decode(extractField(payload, "identity_key"));
 
             if (!identity.verify(peerIdentityKey, peerEphemeral, peerSig)) {
@@ -136,7 +153,6 @@ public class MessageDispatcher {
             byte[] peerEphemeral  = Base64.getDecoder().decode(extractField(payload, "ephemeral_key"));
             byte[] peerSig        = Base64.getDecoder().decode(extractField(payload, "signature"));
 
-            // Verify sig if we have their identity key from mDNS (Java peers expose it; Python peers don't)
             String[] peerInfo = PeerDiscovery.activePeers.get(sender);
             if (peerInfo != null && peerInfo[2] != null) {
                 byte[] peerIdentityKey = Base64.getDecoder().decode(peerInfo[2]);
@@ -160,7 +176,6 @@ public class MessageDispatcher {
         }
     }
 
-    // Mirrors Python's process_chat_message() — payload is a bare base64 string, not an object
     private void handleChatMessage(String sender, String json) {
         try {
             SessionManager session = network.getSession(sender);
@@ -168,7 +183,6 @@ public class MessageDispatcher {
                 System.out.println("[-] CHAT_MESSAGE from " + sender + " but no secure session");
                 return;
             }
-            // Python puts the base64 blob as a bare string value: "payload":"<base64>"
             String encryptedB64  = extractRawPayload(json);
             byte[] decrypted     = session.decrypt(Base64.getDecoder().decode(encryptedB64));
             System.out.println("\r\033[K[ " + sender + " ]: " + new String(decrypted, "UTF-8"));
@@ -178,57 +192,9 @@ public class MessageDispatcher {
         }
     }
 
-    // -------------------------------------------------------------------------
-    // JSON helpers (unchanged from your original)
-    // -------------------------------------------------------------------------
-
-    static String extractField(String json, String key) {
-        // Try with space (Python's json.dumps default) then without (Java's format)
-        String search = "\"" + key + "\": \"";
-        int start = json.indexOf(search);
-        if (start == -1) {
-            search = "\"" + key + "\":\"";
-            start = json.indexOf(search);
-        }
-        if (start == -1) throw new RuntimeException("field '" + key + "' not found in JSON");
-        start += search.length();
-        int end = json.indexOf("\"", start);
-        return json.substring(start, end);
-    }
-
-    static String extractPayload(String json) {
-        int start = json.indexOf("\"payload\": {");
-        if (start == -1) start = json.indexOf("\"payload\":{");
-        if (start == -1) throw new RuntimeException("no payload in JSON");
-        start = json.indexOf("{", start + 9); // jump to the opening brace
-        int depth = 0, i = start;
-        while (i < json.length()) {
-            if (json.charAt(i) == '{') depth++;
-            else if (json.charAt(i) == '}') { if (--depth == 0) break; }
-            i++;
-        }
-        return json.substring(start, i + 1);
-    }
-
-    // ADDED: for when payload is a bare string (e.g. CHAT_MESSAGE)
-    static String extractRawPayload(String json) {
-        // Try with space (Python's json.dumps default) then without (Java's format)
-        String search = "\"payload\": \"";
-        int start = json.indexOf(search);
-        if (start == -1) {
-            search = "\"payload\":\"";
-            start = json.indexOf(search);
-        }
-        if (start == -1) throw new RuntimeException("no string payload in JSON");
-        start += search.length();
-        return json.substring(start, json.indexOf("\"", start));
-    }
-
     private void handleFileListResponse(String sender, String json) {
         try {
             String payload = extractPayload(json);
-
-            //find the JSON array brackets
             int startBracket = payload.indexOf("[");
             int endBracket = payload.lastIndexOf("]");
 
@@ -240,12 +206,11 @@ public class MessageDispatcher {
             String arrayContent = payload.substring(startBracket + 1, endBracket).trim();
             if (arrayContent.isEmpty()) {
                 System.out.println("[*] " + sender + " has no files available.");
-                return;
             } else {
                 System.out.println("[*] " + sender + " has the following files:");
                 String[] files = arrayContent.split(",");
                 for (String file : files) {
-                    String fileName = file.replaceAll("[\"\\s]", ""); // remove quotes and whitespace
+                    String fileName = file.replaceAll("[\"\\s]", "");
                     if (!fileName.isEmpty()) {
                         System.out.println("    - " + fileName);
                     }
@@ -268,18 +233,15 @@ public class MessageDispatcher {
             SessionManager session = network.getSession(sender);
             byte[] peerIdentityKey = Base64.getDecoder().decode(PeerDiscovery.activePeers.get(sender)[2]);
 
-            //Verify signature
             byte[] signature = Base64.getDecoder().decode(encodedSig);
             if (!identity.verify(peerIdentityKey, receivedHash.getBytes(), signature)) {
                 System.out.println("[-] AUTHENTICATION FAILURE: Signature doesn't match for file transfer from " + sender + " for file " + fileName);
                 return;
             }
 
-            //decrypt the data
             byte[] encryptedThing = Base64.getDecoder().decode(encodedData);
             byte[] decryptedData = session.decrypt(encryptedThing);
 
-            //verify hash
             String actualHash = org.bouncycastle.util.encoders.Hex.toHexString(
                 java.security.MessageDigest.getInstance("SHA-256").digest(decryptedData)
             );
@@ -289,11 +251,206 @@ public class MessageDispatcher {
                 return;
             }
 
-            //save the file to downloads folder
-            Files.write(Paths.get("data_" + myName + "/downloads/" + fileName), decryptedData);
-            System.out.println("[+] Received file '" + fileName + "' from " + sender + " (saved to downloads folder)");
+            fileManager.saveIncomingFile(fileName, decryptedData);
+            System.out.println("\n[+] Received and secured file: " + fileName);
         } catch (Exception e) {
-            System.out.println("[-] Failed to process TRANSFER_REQUEST from " + sender + ": " + e.getMessage());
+            System.out.println("[-] Failed to process TRANSFER_ACCEPT from " + sender + ": " + e.getMessage());
         }
+    }
+
+    private void handleOfferAccept(String sender, String json) {
+        try {
+            String payload = extractPayload(json);
+            String fileName = extractField(payload, "filename");
+            System.out.println("\n[+] " + sender + " accepted your offer! Encrypting and sending '" + fileName + "'...");
+
+            java.nio.file.Path filePath = Paths.get("data_" + myName + "/shared/" + fileName);
+            byte[] fileData = Files.readAllBytes(filePath);
+
+            byte[] hashBytes = java.security.MessageDigest.getInstance("SHA-256").digest(fileData);
+            String fileHash = org.bouncycastle.util.encoders.Hex.toHexString(hashBytes);
+            byte[] signature = identity.sign(fileHash.getBytes("UTF-8"));
+
+            SessionManager session = network.getSession(sender);
+            byte[] encryptedFile = session.encrypt(fileData);
+
+            String[] peerInfo = PeerDiscovery.activePeers.get(sender);
+            if (peerInfo != null) {
+                String outPayload = "{" +
+                    "\"filename\":\"" + fileName + "\"," +
+                    "\"data\":\"" + Base64.getEncoder().encodeToString(encryptedFile) + "\"," +
+                    "\"sha256\":\"" + fileHash + "\"," +
+                    "\"signature\":\"" + Base64.getEncoder().encodeToString(signature) + "\"" +
+                "}";
+                String msg = "{\"type\":\"TRANSFER_ACCEPT\",\"sender\":\"" + myName + "\",\"payload\":" + outPayload + "}";
+            
+                network.sendMessage(peerInfo[0], Integer.parseInt(peerInfo[1]), msg);
+                System.out.println("[+] File securely sent to " + sender + "!");
+                System.out.print(myName + " > ");
+            }
+
+        } catch (Exception e) {
+            System.out.println("\n[-] Failed to send file after offer accepted: " + e.getMessage());
+            System.out.print(myName + " > ");
+        }
+    }
+
+    public void executeApprovedTransfer(String target, String fileName) {
+        try {
+            java.nio.file.Path filePath = Paths.get("data_" + myName + "/shared/" + fileName);
+            if (!Files.exists(filePath)) {
+                System.out.println("[-] Error: File '" + fileName + "' not found.");
+                return;
+            }
+            byte[] fileData = Files.readAllBytes(filePath);
+
+            byte[] hashBytes = java.security.MessageDigest.getInstance("SHA-256").digest(fileData);
+            String fileHash = org.bouncycastle.util.encoders.Hex.toHexString(hashBytes);
+            byte[] signature = identity.sign(fileHash.getBytes("UTF-8"));
+
+            SessionManager session = network.getSession(target);
+            byte[] encryptedFile = session.encrypt(fileData);
+
+            String[] peerInfo = PeerDiscovery.activePeers.get(target);
+            if (peerInfo != null) {
+                String payload = "{" +
+                    "\"filename\":\"" + fileName + "\"," +
+                    "\"data\":\"" + Base64.getEncoder().encodeToString(encryptedFile) + "\"," +
+                    "\"sha256\":\"" + fileHash + "\"," +
+                    "\"signature\":\"" + Base64.getEncoder().encodeToString(signature) + "\"" +
+                "}";
+                String msg = "{\"type\":\"TRANSFER_ACCEPT\",\"sender\":\"" + myName + "\",\"payload\":" + payload + "}";
+            
+                network.sendMessage(peerInfo[0], Integer.parseInt(peerInfo[1]), msg);
+                System.out.println("[+] File '" + fileName + "' securely sent to " + target + "!");
+            }
+        } catch (Exception e) {
+            System.out.println("[-] Failed to send file: " + e.getMessage());
+        }
+    }
+
+    private void handleKeyMigration(String sender, String json) {
+        try {
+            String payload = extractPayload(json);
+
+            // Accept either field name Python might send for the new public key
+            String newKeyB64 = "";
+            if (payload.contains("\"new_identity_key\"")) {
+                newKeyB64 = extractField(payload, "new_identity_key");
+            } else if (payload.contains("\"new_public_key\"")) {
+                newKeyB64 = extractField(payload, "new_public_key");
+            } else if (payload.contains("\"identity_key\"")) {
+                newKeyB64 = extractField(payload, "identity_key");
+            }
+
+            if (newKeyB64.isEmpty()) {
+                System.out.println("[-] Migration from " + sender + ": could not find new key field in payload: " + payload);
+                return;
+            }
+
+            // Accept either field name Python might send for the signature
+            String sigB64 = "";
+            if (payload.contains("\"signature\"")) {
+                sigB64 = extractField(payload, "signature");
+            } else if (payload.contains("\"sig\"")) {
+                sigB64 = extractField(payload, "sig");
+            }
+
+            if (sigB64.isEmpty()) {
+                System.out.println("[-] Migration from " + sender + ": could not find signature field in payload: " + payload);
+                return;
+            }
+
+            byte[] newKeyBytes = Base64.getDecoder().decode(newKeyB64);
+            byte[] signatureBytes = Base64.getDecoder().decode(sigB64);
+
+            String[] peerInfo = PeerDiscovery.activePeers.get(sender);
+            if (peerInfo == null || peerInfo[2] == null) {
+                System.out.println("[-] Migration from unknown peer " + sender);
+                return;
+            }
+            byte[] oldKeyBytes = Base64.getDecoder().decode(peerInfo[2]);
+
+            if (!identity.verify(oldKeyBytes, newKeyBytes, signatureBytes)) {
+                System.out.println("\n[!!!] SECURITY ALERT: Forged Key Migration from " + sender + "!");
+                network.removeSession(sender);
+                return;
+            }
+
+            peerInfo[2] = newKeyB64;
+            PeerDiscovery.activePeers.put(sender, peerInfo);
+            
+            System.out.println("\n[+] KEY MIGRATION SUCCESSFUL: " + sender + " rotated their identity key.");
+            System.out.print(myName + " > ");
+
+        } catch (Exception e) {
+            System.out.println("[-] Failed to process migration from " + sender + ": " + e.getMessage());
+        }
+    }
+
+    private void handlePeerLeft(String sender) {
+        PeerDiscovery.activePeers.remove(sender);
+        network.removeSession(sender);
+        System.out.println("\n[-] " + sender + " left the network.");
+        System.out.print(myName + " > ");
+    }
+
+    static String extractField(String json, String key) {
+        String keyMarker = "\"" + key + "\"";
+        int searchFrom = 0;
+        while (true) {
+            int keyIndex = json.indexOf(keyMarker, searchFrom);
+            if (keyIndex == -1) throw new RuntimeException("field '" + key + "' not found");
+            // Verify this is actually a key by checking it is followed by ':'
+            int afterKey = keyIndex + keyMarker.length();
+            int colonCandidate = afterKey;
+            while (colonCandidate < json.length() && json.charAt(colonCandidate) == ' ') colonCandidate++;
+            if (colonCandidate < json.length() && json.charAt(colonCandidate) == ':') {
+                int startQuote = json.indexOf("\"", colonCandidate + 1);
+                if (startQuote == -1) throw new RuntimeException("malformed JSON value for " + key);
+                // Walk forward respecting backslash escapes to find the real closing quote
+                int endQuote = startQuote + 1;
+                while (endQuote < json.length()) {
+                    char c = json.charAt(endQuote);
+                    if (c == '\\') { endQuote += 2; }
+                    else if (c == '\"') { break; }
+                    else { endQuote++; }
+                }
+                if (endQuote >= json.length()) throw new RuntimeException("malformed JSON value for " + key);
+                return json.substring(startQuote + 1, endQuote);
+            }
+            // This occurrence was inside a string value — keep searching
+            searchFrom = keyIndex + 1;
+        }
+    }
+
+    static String extractPayload(String json) {
+        int start = json.indexOf("\"payload\"");
+        if (start == -1) throw new RuntimeException("no payload found");
+        
+        int openBrace = json.indexOf("{", start);
+        if (openBrace == -1) throw new RuntimeException("payload is not an object");
+
+        int depth = 0;
+        for (int i = openBrace; i < json.length(); i++) {
+            if (json.charAt(i) == '{') depth++;
+            else if (json.charAt(i) == '}') {
+                depth--;
+                if (depth == 0) return json.substring(openBrace, i + 1);
+            }
+        }
+        throw new RuntimeException("unclosed payload object");
+    }
+
+    static String extractRawPayload(String json) {
+        String search = "\"payload\": \"";
+        int start = json.indexOf(search);
+        if (start == -1) {
+            search = "\"payload\":\"";
+            start = json.indexOf(search);
+        }
+        if (start == -1) throw new RuntimeException("no string payload in JSON");
+        start += search.length();
+        return json.substring(start, json.indexOf("\"", start));
     }
 }

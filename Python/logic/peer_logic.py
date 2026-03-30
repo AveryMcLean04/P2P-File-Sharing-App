@@ -270,10 +270,62 @@ class PeerLogic:
                     "payload": {"filename": filename}
                 })
 
-    def handle_peer_left(self, sender: str, payload: dict = None):
-        """Cleanup session data when a peer leaves the network."""
-        self.app.active_sessions.pop(sender, None)
-        if hasattr(self.app, "discovery"):
-            self.app.discovery.peers.pop(sender, None)
-        self.app.log("network", f"Peer '{sender}' disconnected. Security context purged.")
-        print(f"{self.app.user_id} > ", end="", flush=True)
+    def initiate_key_migration(self):
+        # Delegate to rotate_identity which uses the correct AuthManager API
+        # and the field names Java expects ("new_identity_key" / "signature")
+        self.rotate_identity()
+
+    def process_key_migration(self, sender, payload):
+        """
+        Processes an incoming identity rotation from a peer.
+        Verifies the Proof of Continuity (new key signed by old key).
+        """
+        try:
+            new_key_bytes = base64.b64decode(payload.get("new_identity_key"))
+            signature = base64.b64decode(payload.get("signature"))
+            
+            # 1. Get the OLD public key we have stored for this peer
+            session = self.app.active_sessions.get(sender)
+            if not session:
+                self.app.log("security", f"Migration from {sender} ignored: No active session.")
+                return
+            
+            old_pub_key = session["peer_identity"]
+
+            # 2. Verify: Did the OLD key sign the NEW key?
+            if self.app.auth_manager.verify_signature(old_pub_key, signature, new_key_bytes):
+                # 3. Update the session with the new identity
+                session["peer_identity"] = new_key_bytes
+                # Also update discovery so future handshakes use the new key
+                if sender in self.app.discovery.peers:
+                    self.app.discovery.peers[sender]["public_key"] = base64.b64encode(new_key_bytes).decode()
+                
+                self.app.log("security", f"KEY MIGRATION SUCCESS: {sender} has updated their identity.")
+            else:
+                self.app.log("security", f"CRITICAL: Forged migration attempt from {sender}!")
+                self.app.active_sessions.pop(sender, None)
+        except Exception as e:
+            self.app.log("error", f"Migration processing failed: {e}")
+    
+    def rotate_identity(self):
+        try:
+            # 1. Generate new keys and proof-of-continuity signature
+            old_pub, new_pub, sig = self.app.auth_manager.migrate_identity()
+
+            # 2. Build message as a dict so json.dumps handles encoding cleanly
+            message = {
+                "type": "KEY_MIGRATION_NOTIFY",
+                "sender": self.app.user_id,
+                "payload": {
+                    "new_identity_key": base64.b64encode(new_pub).decode(),
+                    "signature": base64.b64encode(sig).decode()
+                }
+            }
+
+            # 3. Broadcast to all active peers
+            for peer_id, peer_info in self.app.discovery.peers.items():
+                self.app.network.send_message(peer_info['ip'], peer_info['port'], message)
+
+            self.app.log("security", "New identity generated and broadcasted to active sessions.")
+        except Exception as e:
+            self.app.log("error", f"Migration broadcast failed: {e}")
