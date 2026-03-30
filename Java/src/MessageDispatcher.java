@@ -28,10 +28,7 @@ public class MessageDispatcher {
                 case "HANDSHAKE_RESPONSE": handleHandshakeResponse(sender, json); break;
                 case "CHAT_MESSAGE":       handleChatMessage(sender, json);       break;
                 case "FILE_LIST_REQUEST":
-                    // 1. Get the files from the local shared folder
                     List<String> files = fileManager.listSharedFiles();
-    
-                    // 2. Format them into a JSON array: "file1.txt", "file2.txt"
                     StringBuilder jsonArray = new StringBuilder("[");
                     for (int i = 0; i < files.size(); i++) {
                         jsonArray.append("\"").append(files.get(i)).append("\"");
@@ -39,16 +36,13 @@ public class MessageDispatcher {
                     }
                     jsonArray.append("]");
 
-                    // 3. Build the response payload
                     String response = "{\"type\":\"FILE_LIST_RESPONSE\"," +
                                         "\"sender\":\"" + myName + "\"," +
                                         "\"payload\":{\"files\":" + jsonArray.toString() + "}}";
 
-                    // 4. Send it back to the peer
                     String[] peerInfo = PeerDiscovery.activePeers.get(sender);
                     if (peerInfo != null) {
                         network.sendMessage(peerInfo[0], Integer.parseInt(peerInfo[1]), response);
-                        System.out.println("[*] Sent file list to " + sender);
                     }
                     break;
                 case "FILE_LIST_RESPONSE":
@@ -57,8 +51,7 @@ public class MessageDispatcher {
                 case "PUSH_PROPOSAL":
                     String pushPayload = extractPayload(json);
                     String pushFile = extractField(pushPayload, "filename"); 
-                    System.out.println("\n[!] INCOMING FILE OFFER: " + sender + " wants to send you '" + pushFile + "'.");
-                    System.out.print("Accept transfer? (y/n) > ");
+                    System.out.print("\r\033[K\n\007[!PROPOSAL] " + sender + " wants to SEND you: " + pushFile + "\nAction required: Type 'yes' or 'no'\n" + myName + " > ");
                     PeerDiscovery.pendingOffers.put(sender, new String[]{pushFile});
                     break;
                 case "TRANSFER_REQUEST":
@@ -66,12 +59,12 @@ public class MessageDispatcher {
                     String reqFile = extractField(reqPayload, "filename"); 
     
                     if (reqFile.equals(PeerDiscovery.autoApproveFile)) {
-                        System.out.println("\n[*] Auto-approving request for '" + reqFile + "' (previously offered).");
+                        System.out.println("\r\033[K[TRANSFER] Auto-approving download of '" + reqFile + "' for " + sender + ".");
+                        System.out.print(myName + " > ");
                         PeerDiscovery.autoApproveFile = null;
                         executeApprovedTransfer(sender, reqFile);
                     } else {
-                        System.out.println("\n[!] CONSENT REQUIRED: " + sender + " wants to download '" + reqFile + "' from you.");
-                        System.out.print("Allow? (y/n) > ");
+                        System.out.print("\r\033[K\n\007[!REQUEST] " + sender + " wants to DOWNLOAD: " + reqFile + "\nAction required: Type 'yes' or 'no'\n" + myName + " > ");
                         PeerDiscovery.pendingTransfers.put(sender, new String[]{reqFile});
                     }
                     break;
@@ -82,21 +75,20 @@ public class MessageDispatcher {
                     handleOfferAccept(sender, json);
                     break;
                 case "KEY_MIGRATION_NOTIFY":
-                    System.out.println("\n[!] " + sender + " has migrated to a new identity. Previous sessions are now invalid.");
                     handleKeyMigration(sender, json);
                     break;
                 case "OFFER_REJECT":
-                    System.out.println("\n[-] " + sender + " declined your file offer.");
-                    System.out.print(myName + " > ");
+                case "TRANSFER_REJECT":
+                    System.out.print("\r\033[K[SYSTEM] " + sender + " denied your file offer.\n" + myName + " > ");
                     break;
                 case "PEER_LEFT":
                     handlePeerLeft(sender);
                     break;
                 default:
-                    System.out.println("[-] Unknown message type '" + type + "' from " + sender);
+                    System.out.println("\r\033[K[NETWORK] Unknown message type '" + type + "' from " + sender + "\n" + myName + " > ");
             }
         } catch (Exception e) {
-            System.out.println("[-] Dispatch error: " + e.getMessage());
+            System.out.println("\r\033[K[ERROR] Dispatch error: " + e.getMessage() + "\n" + myName + " > ");
         }
     }
 
@@ -108,7 +100,7 @@ public class MessageDispatcher {
             byte[] peerIdentityKey = Base64.getDecoder().decode(extractField(payload, "identity_key"));
 
             if (!identity.verify(peerIdentityKey, peerEphemeral, peerSig)) {
-                System.out.println("[-] AUTH FAILURE: invalid signature from " + sender);
+                System.out.print("\r\033[K[SECURITY] Handshake signature spoofing detected from " + sender + "!\n" + myName + " > ");
                 return;
             }
 
@@ -121,7 +113,7 @@ public class MessageDispatcher {
 
             String[] peerInfo = PeerDiscovery.activePeers.get(sender);
             if (peerInfo == null) {
-                System.out.println("[-] Cannot respond to " + sender + " — not in peer table");
+                System.out.print("\r\033[K[ERROR] Cannot respond to " + sender + " — not in peer table\n" + myName + " > ");
                 return;
             }
 
@@ -134,10 +126,10 @@ public class MessageDispatcher {
                   "}}";
 
             network.sendMessage(peerInfo[0], Integer.parseInt(peerInfo[1]), response);
-            System.out.println("[+] Handshake complete. Secure session established with " + sender);
+            System.out.print("\r\033[K[SECURITY] Secure session established with " + sender + ".\n" + myName + " > ");
 
         } catch (Exception e) {
-            System.out.println("[-] HANDSHAKE_INIT error from " + sender + ": " + e.getMessage());
+            System.out.print("\r\033[K[ERROR] Handshake Init Failed: " + e.getMessage() + "\n" + myName + " > ");
         }
     }
 
@@ -145,7 +137,7 @@ public class MessageDispatcher {
         try {
             SessionManager pendingSession = network.getPendingSession(sender);
             if (pendingSession == null) {
-                System.out.println("[-] Unexpected HANDSHAKE_RESPONSE from " + sender + " (no pending session)");
+                System.out.print("\r\033[K[ERROR] Unexpected HANDSHAKE_RESPONSE from " + sender + " (no pending session)\n" + myName + " > ");
                 return;
             }
 
@@ -157,22 +149,22 @@ public class MessageDispatcher {
             if (peerInfo != null && peerInfo[2] != null) {
                 byte[] peerIdentityKey = Base64.getDecoder().decode(peerInfo[2]);
                 if (!identity.verify(peerIdentityKey, peerEphemeral, peerSig)) {
-                    System.out.println("[-] AUTH FAILURE: invalid signature in HANDSHAKE_RESPONSE from " + sender);
+                    System.out.print("\r\033[K[SECURITY] Invalid identity signature from " + sender + "!\n" + myName + " > ");
                     network.removePendingSession(sender);
                     return;
                 }
             } else {
-                System.out.println("[!] WARNING: Identity not verified for " + sender + " (no public key in mDNS) — connection established but unauthenticated.");
+                System.out.print("\r\033[K[SECURITY] WARNING: Identity not verified for " + sender + " (no public key in mDNS)\n" + myName + " > ");
             }
 
             pendingSession.deriveSharedSecret(peerEphemeral);
             network.storeSession(sender, pendingSession);
             network.removePendingSession(sender);
 
-            System.out.println("[+] Handshake complete. Secure session established with " + sender);
+            System.out.print("\r\033[K[SECURITY] Mutual trust established. " + sender + " is now SECURE.\n" + myName + " > ");
 
         } catch (Exception e) {
-            System.out.println("[-] HANDSHAKE_RESPONSE error from " + sender + ": " + e.getMessage());
+            System.out.print("\r\033[K[ERROR] Handshake Response Failed: " + e.getMessage() + "\n" + myName + " > ");
         }
     }
 
@@ -180,15 +172,14 @@ public class MessageDispatcher {
         try {
             SessionManager session = network.getSession(sender);
             if (session == null) {
-                System.out.println("[-] CHAT_MESSAGE from " + sender + " but no secure session");
+                System.out.print("\r\033[K[SECURITY] Blocked CHAT_MESSAGE from " + sender + ": Secure session required.\n" + myName + " > ");
                 return;
             }
             String encryptedB64  = extractRawPayload(json);
             byte[] decrypted     = session.decrypt(Base64.getDecoder().decode(encryptedB64));
-            System.out.println("\r\033[K[ " + sender + " ]: " + new String(decrypted, "UTF-8"));
-            System.out.print(myName + " > ");
+            System.out.print("\r\033[K[CHAT] " + sender + ": " + new String(decrypted, "UTF-8") + "\n" + myName + " > ");
         } catch (Exception e) {
-            System.out.println("[-] Failed to decrypt chat message from " + sender);
+            System.out.print("\r\033[K[ERROR] Failed to decrypt message from " + sender + ".\n" + myName + " > ");
         }
     }
 
@@ -199,26 +190,26 @@ public class MessageDispatcher {
             int endBracket = payload.lastIndexOf("]");
 
             if (startBracket == -1 || endBracket == -1 || endBracket < startBracket) {
-                System.out.println("[-] Invalid FILE_LIST_RESPONSE from " + sender + ": no valid JSON array");
+                System.out.print("\r\033[K[ERROR] Invalid FILE_LIST_RESPONSE from " + sender + "\n" + myName + " > ");
                 return;
             }
 
             String arrayContent = payload.substring(startBracket + 1, endBracket).trim();
             if (arrayContent.isEmpty()) {
-                System.out.println("[*] " + sender + " has no files available.");
+                System.out.print("\r\033[K[CATALOG] Peer '" + sender + "' offers 0 files:\n  > (Empty)\n" + myName + " > ");
             } else {
-                System.out.println("[*] " + sender + " has the following files:");
                 String[] files = arrayContent.split(",");
+                System.out.print("\r\033[K[CATALOG] Peer '" + sender + "' offers " + files.length + " files:\n");
                 for (String file : files) {
                     String fileName = file.replaceAll("[\"\\s]", "");
                     if (!fileName.isEmpty()) {
-                        System.out.println("    - " + fileName);
+                        System.out.println("  > " + fileName);
                     }
                 }
+                System.out.print(myName + " > ");
             }
-            System.out.print(myName + " > ");
         } catch (Exception e) {
-            System.out.println("[-] Failed to process FILE_LIST_RESPONSE from " + sender + ": " + e.getMessage());
+            System.out.print("\r\033[K[ERROR] Failed to process FILE_LIST_RESPONSE from " + sender + ": " + e.getMessage() + "\n" + myName + " > ");
         }
     }
 
@@ -235,7 +226,7 @@ public class MessageDispatcher {
 
             byte[] signature = Base64.getDecoder().decode(encodedSig);
             if (!identity.verify(peerIdentityKey, receivedHash.getBytes(), signature)) {
-                System.out.println("[-] AUTHENTICATION FAILURE: Signature doesn't match for file transfer from " + sender + " for file " + fileName);
+                System.out.print("\r\033[K[SECURITY] CRITICAL: Identity signature mismatch on " + fileName + "!\n" + myName + " > ");
                 return;
             }
 
@@ -247,14 +238,14 @@ public class MessageDispatcher {
             );
 
             if (!actualHash.equalsIgnoreCase(receivedHash)) {
-                System.out.println("[-] INTEGRITY FAILURE: Hash doesn't match for file transfer from " + sender + " for file " + fileName);
+                System.out.print("\r\033[K[SECURITY] INTEGRITY ALERT: Hash mismatch for " + fileName + "!\n" + myName + " > ");
                 return;
             }
 
             fileManager.saveIncomingFile(fileName, decryptedData);
-            System.out.println("\n[+] Received and secured file: " + fileName);
+            System.out.print("\r\033[K[FILE] Securely received and stored: " + fileName + "\n" + myName + " > ");
         } catch (Exception e) {
-            System.out.println("[-] Failed to process TRANSFER_ACCEPT from " + sender + ": " + e.getMessage());
+            System.out.print("\r\033[K[ERROR] Transfer intake failed: " + e.getMessage() + "\n" + myName + " > ");
         }
     }
 
@@ -262,7 +253,6 @@ public class MessageDispatcher {
         try {
             String payload = extractPayload(json);
             String fileName = extractField(payload, "filename");
-            System.out.println("\n[+] " + sender + " accepted your offer! Encrypting and sending '" + fileName + "'...");
 
             java.nio.file.Path filePath = Paths.get("data_" + myName + "/shared/" + fileName);
             byte[] fileData = Files.readAllBytes(filePath);
@@ -285,13 +275,11 @@ public class MessageDispatcher {
                 String msg = "{\"type\":\"TRANSFER_ACCEPT\",\"sender\":\"" + myName + "\",\"payload\":" + outPayload + "}";
             
                 network.sendMessage(peerInfo[0], Integer.parseInt(peerInfo[1]), msg);
-                System.out.println("[+] File securely sent to " + sender + "!");
-                System.out.print(myName + " > ");
+                System.out.print("\r\033[K[TRANSFER] Transfer complete: '" + fileName + "' sent to " + sender + ".\n" + myName + " > ");
             }
 
         } catch (Exception e) {
-            System.out.println("\n[-] Failed to send file after offer accepted: " + e.getMessage());
-            System.out.print(myName + " > ");
+            System.out.print("\r\033[K[ERROR] Transfer execution failed: " + e.getMessage() + "\n" + myName + " > ");
         }
     }
 
@@ -299,7 +287,7 @@ public class MessageDispatcher {
         try {
             java.nio.file.Path filePath = Paths.get("data_" + myName + "/shared/" + fileName);
             if (!Files.exists(filePath)) {
-                System.out.println("[-] Error: File '" + fileName + "' not found.");
+                System.out.println("[ERROR] Error: File '" + fileName + "' not found.");
                 return;
             }
             byte[] fileData = Files.readAllBytes(filePath);
@@ -322,10 +310,10 @@ public class MessageDispatcher {
                 String msg = "{\"type\":\"TRANSFER_ACCEPT\",\"sender\":\"" + myName + "\",\"payload\":" + payload + "}";
             
                 network.sendMessage(peerInfo[0], Integer.parseInt(peerInfo[1]), msg);
-                System.out.println("[+] File '" + fileName + "' securely sent to " + target + "!");
+                System.out.println("[TRANSFER] Transfer complete: '" + fileName + "' sent to " + target + ".");
             }
         } catch (Exception e) {
-            System.out.println("[-] Failed to send file: " + e.getMessage());
+            System.out.println("[ERROR] Transfer execution failed: " + e.getMessage());
         }
     }
 
@@ -333,7 +321,6 @@ public class MessageDispatcher {
         try {
             String payload = extractPayload(json);
 
-            // Accept either field name Python might send for the new public key
             String newKeyB64 = "";
             if (payload.contains("\"new_identity_key\"")) {
                 newKeyB64 = extractField(payload, "new_identity_key");
@@ -344,11 +331,10 @@ public class MessageDispatcher {
             }
 
             if (newKeyB64.isEmpty()) {
-                System.out.println("[-] Migration from " + sender + ": could not find new key field in payload: " + payload);
+                System.out.print("\r\033[K[ERROR] Migration from " + sender + " missing new key field.\n" + myName + " > ");
                 return;
             }
 
-            // Accept either field name Python might send for the signature
             String sigB64 = "";
             if (payload.contains("\"signature\"")) {
                 sigB64 = extractField(payload, "signature");
@@ -357,7 +343,7 @@ public class MessageDispatcher {
             }
 
             if (sigB64.isEmpty()) {
-                System.out.println("[-] Migration from " + sender + ": could not find signature field in payload: " + payload);
+                System.out.print("\r\033[K[ERROR] Migration from " + sender + " missing signature field.\n" + myName + " > ");
                 return;
             }
 
@@ -366,13 +352,13 @@ public class MessageDispatcher {
 
             String[] peerInfo = PeerDiscovery.activePeers.get(sender);
             if (peerInfo == null || peerInfo[2] == null) {
-                System.out.println("[-] Migration from unknown peer " + sender);
+                System.out.print("\r\033[K[ERROR] Migration from unknown peer " + sender + "\n" + myName + " > ");
                 return;
             }
             byte[] oldKeyBytes = Base64.getDecoder().decode(peerInfo[2]);
 
             if (!identity.verify(oldKeyBytes, newKeyBytes, signatureBytes)) {
-                System.out.println("\n[!!!] SECURITY ALERT: Forged Key Migration from " + sender + "!");
+                System.out.print("\r\033[K[SECURITY] CRITICAL: Forged migration attempt from " + sender + "!\n" + myName + " > ");
                 network.removeSession(sender);
                 return;
             }
@@ -380,19 +366,17 @@ public class MessageDispatcher {
             peerInfo[2] = newKeyB64;
             PeerDiscovery.activePeers.put(sender, peerInfo);
             
-            System.out.println("\n[+] KEY MIGRATION SUCCESSFUL: " + sender + " rotated their identity key.");
-            System.out.print(myName + " > ");
+            System.out.print("\r\033[K[SECURITY] KEY MIGRATION SUCCESS: " + sender + " has updated their identity.\n" + myName + " > ");
 
         } catch (Exception e) {
-            System.out.println("[-] Failed to process migration from " + sender + ": " + e.getMessage());
+            System.out.print("\r\033[K[ERROR] Migration processing failed: " + e.getMessage() + "\n" + myName + " > ");
         }
     }
 
     private void handlePeerLeft(String sender) {
         PeerDiscovery.activePeers.remove(sender);
         network.removeSession(sender);
-        System.out.println("\n[-] " + sender + " left the network.");
-        System.out.print(myName + " > ");
+        System.out.print("\r\033[K[NETWORK] Peer Offline: " + sender + "\n" + myName + " > ");
     }
 
     static String extractField(String json, String key) {
@@ -401,14 +385,12 @@ public class MessageDispatcher {
         while (true) {
             int keyIndex = json.indexOf(keyMarker, searchFrom);
             if (keyIndex == -1) throw new RuntimeException("field '" + key + "' not found");
-            // Verify this is actually a key by checking it is followed by ':'
             int afterKey = keyIndex + keyMarker.length();
             int colonCandidate = afterKey;
             while (colonCandidate < json.length() && json.charAt(colonCandidate) == ' ') colonCandidate++;
             if (colonCandidate < json.length() && json.charAt(colonCandidate) == ':') {
                 int startQuote = json.indexOf("\"", colonCandidate + 1);
                 if (startQuote == -1) throw new RuntimeException("malformed JSON value for " + key);
-                // Walk forward respecting backslash escapes to find the real closing quote
                 int endQuote = startQuote + 1;
                 while (endQuote < json.length()) {
                     char c = json.charAt(endQuote);
@@ -419,7 +401,6 @@ public class MessageDispatcher {
                 if (endQuote >= json.length()) throw new RuntimeException("malformed JSON value for " + key);
                 return json.substring(startQuote + 1, endQuote);
             }
-            // This occurrence was inside a string value — keep searching
             searchFrom = keyIndex + 1;
         }
     }

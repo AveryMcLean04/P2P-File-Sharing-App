@@ -33,7 +33,7 @@ public class FileManager {
             Files.createDirectories(vaultDir);
             Files.createDirectories(stagingDir);
         } catch (Exception e) {
-            System.out.println("[-] Failed to create directories: " + e.getMessage());
+            System.out.println("[ERROR] Failed to create directories: " + e.getMessage());
         }
     }
 
@@ -45,12 +45,10 @@ public class FileManager {
             SecretKeyFactory factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
             this.vaultKey = factory.generateSecret(spec).getEncoded();
             
-            System.out.println("[*] Vault key derived successfully.");
-            
             // Now that we have the key, decrypt everything in the vault onto the shared workbench
             extractVaultToShared();
         } catch (Exception e) {
-            System.out.println("[-] Failed to unlock vault: " + e.getMessage());
+            System.out.println("[ERROR] Failed to unlock vault: " + e.getMessage());
         }
     }
 
@@ -67,26 +65,26 @@ public class FileManager {
                     Files.write(sharedDir.resolve(originalName), plainText);
                     
                 } catch (Exception e) {
-                    System.out.println("[-] Failed to decrypt '" + encryptedFile.getFileName() + "': Incorrect password or corrupted file.");
+                    System.out.println("[ERROR] Failed to decrypt '" + encryptedFile.getFileName() + "': Incorrect password or corrupted file.");
                 }
             });
-            System.out.println("[+] Vault unlocked. Files ready in shared folder.");
+            System.out.println("[SYSTEM] Vault unlocked. Files ready in shared folder.");
         } catch (Exception e) {
-            System.out.println("[-] Error reading vault directory.");
+            System.out.println("[ERROR] Error reading vault directory.");
         }
     }
 
     // 3. The Cleanup Phase: Wipe the shared folder completely
     public void lockVaultAndCleanup() {
-        System.out.println("[*] Securing vault and wiping shared workspace...");
+        System.out.println("[SYSTEM] Securing vault and wiping shared workspace...");
         try (Stream<Path> paths = Files.walk(sharedDir)) {
             paths.sorted(Comparator.reverseOrder())
                  .map(Path::toFile)
-                 .filter(f -> !f.getName().equals("shared")) // Don't delete the folder itself, just contents
+                 .filter(f -> !f.getName().equals("shared")) // Don't delete the folder itself
                  .forEach(File::delete);
-            System.out.println("[+] Workspace wiped cleanly.");
+            System.out.println("[SYSTEM] Workspace wiped cleanly.");
         } catch (Exception e) {
-            System.out.println("[-] Error wiping workspace: " + e.getMessage());
+            System.out.println("[ERROR] Error wiping workspace: " + e.getMessage());
         }
         // Destroy the key in RAM
         if (this.vaultKey != null) {
@@ -115,8 +113,6 @@ public class FileManager {
         }
         return files;
     }
-
-    // --- AES-GCM Local Cryptography ---
 
     private byte[] encryptLocalFile(byte[] plaintext) throws Exception {
         if (vaultKey == null) throw new Exception("Vault is locked!");
@@ -158,14 +154,14 @@ public class FileManager {
 
 
     public void importFromStaging() {
-        System.out.println("[*] Checking staging area for files...");
+        System.out.println("[SYSTEM] Checking staging area for files...");
         try (Stream<Path> paths = Files.walk(stagingDir)) {
             // Collect all files in the staging folder (ignoring the folder itself)
             java.util.List<Path> filesToImport = paths.filter(Files::isRegularFile)
                                                       .collect(java.util.stream.Collectors.toList());
 
             if (filesToImport.isEmpty()) {
-                System.out.println("[-] Staging area is empty. Drop files into 'data_" + myName + "/staging' first.");
+                System.out.println("[SYSTEM] Staging area is empty. Drop files into 'data_" + myName + "/staging' first.");
                 return;
             }
 
@@ -179,12 +175,12 @@ public class FileManager {
 
                 // Wipe the unencrypted original from the staging area
                 Files.delete(file);
-                System.out.println("[+] Secured and imported: " + fileName);
+                System.out.println("[FILE] Secured and imported: " + fileName);
             }
-            System.out.println("[+] Import complete. Staging area is now clean.");
+            System.out.println("[SYSTEM] Import complete. Staging area is now clean.");
 
         } catch (Exception e) {
-            System.out.println("[-] Error during import: " + e.getMessage());
+            System.out.println("[ERROR] Error during import: " + e.getMessage());
         }
     }
 }

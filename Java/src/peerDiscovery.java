@@ -34,9 +34,6 @@ public class PeerDiscovery {
         final int PORT = (args.length > 1) ? Integer.parseInt(args[1]) : 5000;
         String myName = (args.length > 0) ? args[0] : "Bob_java";
 
-        System.out.println("=== Starting P2P Node for " + myName + " ===");
-
-        // Secure password prompt (handling IDE fallback just in case)
         Console console = System.console();
         char[] password;
         if (console != null) {
@@ -47,28 +44,22 @@ public class PeerDiscovery {
             password = scanner.nextLine().toCharArray();
         }
 
-        // 1. Initialize Identity
         IdentityManager identity = new IdentityManager(myName);
         identity.loadOrGenerate(password);
 
-        // 2. Initialize and Unlock FileManager (Vault)
         FileManager fileManager = new FileManager(myName);
         fileManager.unlockVault(password);
 
-        // Clear the password from memory now that both modules have used it
         Arrays.fill(password, '\0');
 
-        // 3. The Magic Cleanup Hook
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            System.out.println("\n[*] Emergency shutdown detected. Locking vault...");
+            System.out.println("\n[SYSTEM] Performing graceful shutdown...");
             fileManager.lockVaultAndCleanup();
         }));
 
-        System.out.println("Step 1: getting local address...");
         InetAddress localAddress = getLocalNetworkAddress();
-        System.out.println("Step 2: local address = " + localAddress.getHostAddress());
+        System.out.println("[NETWORK] Starting mDNS peer discovery...");
         JmDNS jmdns = JmDNS.create(localAddress);
-        System.out.println("Step 3: jmdns created");
 
         String pubKeyBase64 = Base64.getEncoder().encodeToString(identity.getPublicKeyBytes());
         Map<String, String> props = new HashMap<>();
@@ -76,17 +67,15 @@ public class PeerDiscovery {
         props.put("public_key", pubKeyBase64);
         ServiceInfo info = ServiceInfo.create(SERVICE_TYPE, myName, PORT, 0, 0, props);
         jmdns.registerService(info);
-        System.out.println("Registered as: " + myName);
+        System.out.println("[NETWORK] Registering mDNS: " + myName + " at " + localAddress.getHostAddress() + ":" + PORT);
 
         NetworkManager network = new NetworkManager(PORT, identity, myName);
-        // Note: FileManager is already initialized at the top now!
         MessageDispatcher dispatcher = new MessageDispatcher(network, identity, myName, fileManager);
         network.setDispatcher(dispatcher);
         network.startServer();
 
         jmdns.addServiceListener(SERVICE_TYPE, new ServiceListener() {
             public void serviceAdded(ServiceEvent event) {
-                // Request info twice with a short delay — helps across machines
                 jmdns.requestServiceInfo(event.getType(), event.getName());
                 new Thread(() -> {
                     try { Thread.sleep(1000); } catch (InterruptedException e) {}
@@ -96,36 +85,25 @@ public class PeerDiscovery {
 
             public void serviceResolved(ServiceEvent event) {
                 try {
-                    // Ignore our own broadcast
                     if (event.getName().equals(myName)) return;
 
-                    // 1. DEFENSIVE CHECK: Did JmDNS actually find the IP?
                     String[] addresses = event.getInfo().getHostAddresses();
-                    if (addresses == null || addresses.length == 0) {
-                        // If it fails, we just wait. Our retry thread in serviceAdded will trigger this again!
-                        // System.out.println("[-] Debug: Found " + event.getName() + " but waiting for IP address...");
-                        return; 
-                    }
+                    if (addresses == null || addresses.length == 0) return; 
                     
                     String address = addresses[0];
                     int peerPort = event.getInfo().getPort();
 
-                    // 2. Safely extract properties
                     byte[] pubKeyProp = event.getInfo().getPropertyBytes("public_key");
                     String peerPubKey = pubKeyProp != null ? new String(pubKeyProp) : null;
 
                     byte[] userIdProp = event.getInfo().getPropertyBytes("user_id");
                     String peerId = userIdProp != null ? new String(userIdProp) : event.getName().split("\\.")[0];
 
-                    // 3. Add to our active list
                     activePeers.put(peerId, new String[]{address, String.valueOf(peerPort), peerPubKey});
-                    System.out.println("\n[+] Peer found: " + peerId + " @ " + address + ":" + peerPort);
-                    System.out.print(myName + " > ");
+                    System.out.print("\r\033[K[NETWORK] Discovered Peer: " + peerId + " at " + address + ":" + peerPort + "\n" + myName + " > ");
                     
                 } catch (Exception e) {
-                    // If anything else goes wrong, don't fail silently! Tell us!
-                    System.out.println("\n[-] Network resolution error for " + event.getName() + ": " + e.getMessage());
-                    System.out.print(myName + " > ");
+                    System.out.print("\r\033[K[ERROR] Network resolution error for " + event.getName() + ": " + e.getMessage() + "\n" + myName + " > ");
                 }
             }
 
@@ -133,15 +111,17 @@ public class PeerDiscovery {
                 byte[] userIdProp = event.getInfo() != null ? event.getInfo().getPropertyBytes("user_id") : null;
                 String peerId = userIdProp != null ? new String(userIdProp) : event.getName().split("\\.")[0];
                 activePeers.remove(peerId);
-                System.out.println("\n[-] Peer left: " + peerId);
-                System.out.print(myName + " > ");
+                System.out.print("\r\033[K[NETWORK] Peer Offline: " + peerId + "\n" + myName + " > ");
             }
         });
 
+        // Banner printed post-vault unlock
         System.out.println("\n==================================================");
-        System.out.println("        SECURE P2P: " + myName + " (Port " + PORT + ")");
-        System.out.println("  Type 'help' for commands");
+        String title = "SECURE P2P: " + myName;
+        int padding = (50 - title.length()) / 2;
+        System.out.printf("%" + (padding + title.length()) + "s\n", title);
         System.out.println("==================================================");
+        System.out.println("[SYSTEM] Vault Unlocked. System Ready.");
 
         Scanner scanner = new Scanner(System.in);
         while (true) {
@@ -156,7 +136,7 @@ public class PeerDiscovery {
             switch (cmd) {
                 case "help":
                     System.out.println("\nCOMMAND      | DESCRIPTION");
-                    System.out.println("-------------------------------------------");
+                    System.out.println("----------------------------------------------------");
                     System.out.println("list         | List discovered peers");
                     System.out.println("connect      | Handshake with a peer");
                     System.out.println("chat         | Send encrypted message to a peer");
@@ -170,22 +150,23 @@ public class PeerDiscovery {
 
                 case "list":
                     if (activePeers.isEmpty()) {
-                        System.out.println("[-] No peers discovered.");
+                        System.out.println("[SYSTEM] No active peers found on local network.");
                     } else {
+                        System.out.println("\n--- Discovered Peers (" + activePeers.size() + ") ---");
                         for (Map.Entry<String, String[]> entry : activePeers.entrySet()) {
-                            String sessionStatus = network.hasSession(entry.getKey()) ? "Encrypted-Session" : "No-Session";
-                            System.out.println(" > " + entry.getKey() + " [" + entry.getValue()[0] + ":" + entry.getValue()[1] + "] " + sessionStatus);
+                            String sessionStatus = network.hasSession(entry.getKey()) ? "SECURE-SESSION" : "No-Session";
+                            System.out.println(" > " + entry.getKey() + " [" + entry.getValue()[0] + ":" + entry.getValue()[1] + "] Status: " + sessionStatus);
                         }
                     }
                     break;
 
                 case "import":
-                    System.out.println("[*] Importing files from staging area to vault...");
+                    System.out.println("[SYSTEM] Importing files from staging area to vault...");
                     fileManager.importFromStaging();
                     break;
                 
                 case "migrate":
-                    System.out.println("\n[!] KEY MIGRATION WARNING");
+                    System.out.println("\n[SYSTEM] KEY MIGRATION WARNING");
                     System.out.println("This will destroy your current Identity Key and generate a new one.");
                     System.out.println("Your peers will be notified securely.");
                     
@@ -198,45 +179,41 @@ public class PeerDiscovery {
                     }
 
                     try {
-                        // 1. Generate new keys, sign them, and save to disk
                         String[] migrationData = identity.migrateKey(migPassword);
                         String newKeyB64 = migrationData[0];
                         String sigB64 = migrationData[1];
 
-                        // 2. Clear the password from RAM
                         java.util.Arrays.fill(migPassword, '\0');
 
-                        // 3. Build the JSON payload to prove continuity
                         String payload = "{" +
                             "\"new_identity_key\":\"" + newKeyB64 + "\"," +
                             "\"signature\":\"" + sigB64 + "\"" +
                         "}";
                         String msg = "{\"type\":\"KEY_MIGRATION_NOTIFY\",\"sender\":\"" + myName + "\",\"payload\":" + payload + "}";
 
-                        // 4. Broadcast the update to all active peers
                         if (activePeers.isEmpty()) {
-                            System.out.println("[*] Key migrated locally. No active peers to notify.");
+                            System.out.println("[SYSTEM] Key migrated locally. No active peers to notify.");
                         } else {
                             for (Map.Entry<String, String[]> entry : activePeers.entrySet()) {
                                 String[] peer = entry.getValue();
                                 network.sendMessage(peer[0], Integer.parseInt(peer[1]), msg);
                             }
-                            System.out.println("[+] Migration broadcasted to all active peers.");
+                            System.out.println("[SECURITY] New identity generated and broadcasted to active sessions.");
                         }
                     } catch (Exception e) {
-                        System.out.println("[-] Migration failed: " + e.getMessage());
+                        System.out.println("[ERROR] Migration failed: " + e.getMessage());
                     }
                     break;
 
 
                 case "connect":
                     if (activePeers.isEmpty()) {
-                        System.out.println("[-] No active peers to connect to.");
+                        System.out.println("[ERROR] No active peers to connect to.");
                     } else {
-                        System.out.print("Connect to: ");
+                        System.out.print("Connect to (UserID): ");
                         String target = scanner.nextLine().trim();
                         if (!activePeers.containsKey(target)) {
-                            System.out.println("[-] Peer '" + target + "' not found.");
+                            System.out.println("[ERROR] Peer '" + target + "' not found. Check 'list'.");
                         } else {
                             String[] peer = activePeers.get(target);
                             network.connectToPeer(peer[0], Integer.parseInt(peer[1]), target);
@@ -244,160 +221,172 @@ public class PeerDiscovery {
                     }
                     break;
 
-                // ADDED: send an encrypted chat message to a peer with an active session
                 case "chat": {
-                    System.out.print("Chat with: ");
+                    System.out.print("Recipient: ");
                     String target = scanner.nextLine().trim();
                     if (!activePeers.containsKey(target)) {
-                        System.out.println("[-] Peer '" + target + "' not found.");
+                        System.out.println("[ERROR] Peer '" + target + "' not found.");
                         break;
                     }
                     if (!network.hasSession(target)) {
-                        System.out.println("[-] No secure session with " + target + ". Run 'connect' first.");
+                        System.out.println("[ERROR] Access Denied: No secure session with " + target + ".");
                         break;
                     }
-                    System.out.print("Message: ");
+                    System.out.print("Message for " + target + ": ");
                     String message = scanner.nextLine();
                     try {
                         byte[] encrypted = network.getSession(target).encrypt(message.getBytes("UTF-8"));
                         String encB64    = Base64.getEncoder().encodeToString(encrypted);
-                        // Python expects "payload":"<base64>" (bare string, not an object)
                         String[] peer = activePeers.get(target);
                         String msg = "{\"type\":\"CHAT_MESSAGE\",\"sender\":\"" + myName + "\",\"payload\":\"" + encB64 + "\"}";
                         network.sendMessage(peer[0], Integer.parseInt(peer[1]), msg);
+                        System.out.println("[SYSTEM] Message sent to " + target + ".");
                     } catch (Exception e) {
-                        System.out.println("[-] Encrypt failed: " + e.getMessage());
+                        System.out.println("[ERROR] Encryption failed: " + e.getMessage());
                     }
                     break;
                 }
 
                 case "fetch":
-                    System.out.print("Fetch list from: ");
+                    System.out.print("Fetch file list from (UserID): ");
                     String target = scanner.nextLine().trim();
                     if (!activePeers.containsKey(target)) {
-                        System.out.println("[-] Peer '" + target + "' not found.");
+                        System.out.println("[ERROR] Peer '" + target + "' not found.");
+                    } else if (!network.hasSession(target)) {
+                        System.out.println("[ERROR] Access Denied: No secure session with " + target + ".");
                     } else {
                         String[] peer = activePeers.get(target);
                         String msg = "{\"type\":\"FILE_LIST_REQUEST\",\"sender\":\"" + myName + "\",\"payload\":{}}";
                         network.sendMessage(peer[0], Integer.parseInt(peer[1]), msg);
+                        System.out.println("[SYSTEM] Syncing catalog with " + target + "...");
                     }
                     break;
 
                 case "exit":
-                    System.out.println("[*] Shutting down...");
-                    // ADDED: notify all peers before leaving, matches Python's shutdown()
+                    System.out.println("[SYSTEM] Performing graceful shutdown...");
                     network.broadcastPeerLeft(myName, activePeers);
                     jmdns.unregisterAllServices();
                     jmdns.close();
+                    System.out.println("[SYSTEM] Goodbye.");
                     System.exit(0);
                     break;
+
                 case "send": {
-                    System.out.print("Send file to: ");
+                    System.out.print("Recipient UserID: ");
                     String sendTarget = scanner.nextLine().trim();
                     if (!activePeers.containsKey(sendTarget)) {
-                        System.out.println("[-] Peer '" + sendTarget + "' not found.");
+                        System.out.println("[ERROR] Peer '" + sendTarget + "' not found.");
                         break;
                     }
                     if (!network.hasSession(sendTarget)) {
-                        System.out.println("[-] No secure session with " + sendTarget + ". Run 'connect' first.");
+                        System.out.println("[ERROR] Access Denied: No secure session with " + sendTarget + ".");
                         break;
                     }
                     
                     System.out.print("Filename to send: ");
                     String sendFileName = scanner.nextLine().trim();
                     
-                    // 1. Check if the file actually exists before we offer it
                     java.nio.file.Path filePath = java.nio.file.Paths.get("data_" + myName + "/shared/" + sendFileName);
                     if (!java.nio.file.Files.exists(filePath)) {
-                        System.out.println("[-] Error: File '" + sendFileName + "' not found in your shared folder.");
+                        System.out.println("[ERROR] Error: File '" + sendFileName + "' not found in your shared folder.");
                         break;
                     }
 
                     try {
-                        // Flag this file so we auto-send it when they request it!
                         autoApproveFile = sendFileName; 
                         
                         String[] peer = activePeers.get(sendTarget);
                         String msg = "{\"type\":\"PUSH_PROPOSAL\",\"sender\":\"" + myName + "\",\"payload\":{\"filename\":\"" + sendFileName + "\"}}";
                         network.sendMessage(peer[0], Integer.parseInt(peer[1]), msg);
-                        System.out.println("[*] Offered '" + sendFileName + "' to " + sendTarget + ". Waiting for them to accept...");
+                        System.out.println("[TRANSFER] Push proposal for '" + sendFileName + "' sent to " + sendTarget + ".");
                     } catch (Exception e) {
-                        System.out.println("[-] Send offer failed: " + e.getMessage());
+                        System.out.println("[ERROR] Send offer failed: " + e.getMessage());
                     }
                     break;
                 }
 
                 case "request":
-                    System.out.print("Request file from: ");
+                    System.out.print("Request from: ");
                     String requestTarget = scanner.nextLine().trim();
                     if (!activePeers.containsKey(requestTarget)) {
-                        System.out.println("[-] Peer '" + requestTarget + "' not found.");
+                        System.out.println("[ERROR] Peer '" + requestTarget + "' not found.");
                         break;
                     }
                     if (!network.hasSession(requestTarget)) {
-                        System.out.println("[-] No secure session with " + requestTarget + ". Run 'connect' first.");
+                        System.out.println("[ERROR] Access Denied: No secure session with " + requestTarget + ".");
                         break;
                     }
     
-                    System.out.print("Filename to request: ");
+                    System.out.print("Filename: ");
                     String reqFileName = scanner.nextLine().trim();
     
                     try {
                         String[] peer = activePeers.get(requestTarget);
                         String msg = "{\"type\":\"TRANSFER_REQUEST\",\"sender\":\"" + myName + "\",\"payload\":{\"filename\":\"" + reqFileName + "\"}}";
                         network.sendMessage(peer[0], Integer.parseInt(peer[1]), msg);
-                        System.out.println("[*] Requested '" + reqFileName + "' from " + requestTarget + ". Waiting for their consent...");
+                        System.out.println("[TRANSFER] Requested '" + reqFileName + "' from " + requestTarget + ". Waiting for peer...");
                     } catch (Exception e) {
-                        System.out.println("[-] Request failed: " + e.getMessage());
+                        System.out.println("[ERROR] Request failed: " + e.getMessage());
                     }
                     break;
                 case "y":
                 case "yes": {
-                    // Scenario A: We are accepting an incoming OFFER (Push)
                     if (!pendingOffers.isEmpty()) {
                         Map.Entry<String, String[]> entry = pendingOffers.entrySet().iterator().next();
                         String sender = entry.getKey();
                         String fileName = entry.getValue()[0];
                         pendingOffers.remove(sender);
         
-                        // Tell Alice we want it by sending a standard TRANSFER_REQUEST
                         String[] peer = activePeers.get(sender);
                         String msg = "{\"type\":\"TRANSFER_REQUEST\",\"sender\":\"" + myName + "\",\"payload\":{\"filename\":\"" + fileName + "\"}}";
                         network.sendMessage(peer[0], Integer.parseInt(peer[1]), msg);
-                        System.out.println("[*] Offer accepted. Requesting '" + fileName + "' from " + sender + "...");
+                        System.out.println("[TRANSFER] Accepted push. Requesting '" + fileName + "'...");
                         break;
                     }
     
-                    // Scenario B: We are approving an incoming REQUEST (Pull)
                     if (!pendingTransfers.isEmpty()) {
                         Map.Entry<String, String[]> entry = pendingTransfers.entrySet().iterator().next();
                         String requester = entry.getKey();
                         String fileName = entry.getValue()[0];
                         pendingTransfers.remove(requester);
         
-                        // Use our dispatcher helper to send the data
                         dispatcher.executeApprovedTransfer(requester, fileName);
                         break;
                     }
     
-                    System.out.println("[-] No pending transfers or offers to approve.");
+                    System.out.println("[ERROR] No pending transfers or offers to approve.");
                     break;
                 }
 
                 case "n":
                 case "no": {
-                    if (pendingTransfers.isEmpty()) {
-                        System.out.println("[-] No pending transfers to reject.");
+                    if (pendingTransfers.isEmpty() && pendingOffers.isEmpty()) {
+                        System.out.println("[ERROR] No pending transfers to reject.");
                         break;
                     }
+
+                    if (!pendingOffers.isEmpty()) {
+                        Map.Entry<String, String[]> entry = pendingOffers.entrySet().iterator().next();
+                        String sender = entry.getKey();
+                        String fileName = entry.getValue()[0];
+                        pendingOffers.remove(sender);
+
+                        String[] peerInfo = activePeers.get(sender);
+                        if (peerInfo != null) {
+                            String msg = "{\"type\":\"OFFER_REJECT\",\"sender\":\"" + myName + "\",\"payload\":{\"filename\":\"" + fileName + "\"}}";
+                            network.sendMessage(peerInfo[0], Integer.parseInt(peerInfo[1]), msg);
+                        }
+                        System.out.println("[SYSTEM] Transfer request denied.");
+                        break;
+                    }
+
                     Map.Entry<String, String[]> entry = pendingTransfers.entrySet().iterator().next();
                     String requester = entry.getKey();
                     String fileName = entry.getValue()[0];
                     pendingTransfers.remove(requester);
                     
-                    System.out.println("[-] Rejected transfer of '" + fileName + "' to " + requester);
+                    System.out.println("[SYSTEM] Transfer request denied.");
                     
-                    // Let the other peer know you said no
                     String[] peerInfo = activePeers.get(requester);
                     if (peerInfo != null) {
                         String msg = "{\"type\":\"TRANSFER_REJECT\",\"sender\":\"" + myName + "\",\"payload\":{\"filename\":\"" + fileName + "\"}}";
@@ -407,7 +396,7 @@ public class PeerDiscovery {
                 }
 
                 default:
-                    System.out.println("[-] Unknown command '" + cmd + "'. Type 'help' for options.");
+                    System.out.println("[ERROR] Unknown command: '" + cmd + "'. Type 'help' for list.");
             }
         }
     }

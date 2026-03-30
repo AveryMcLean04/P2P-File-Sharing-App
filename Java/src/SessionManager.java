@@ -41,7 +41,6 @@ public class SessionManager {
         byte[] rawSecret = new byte[agreement.getAgreementSize()];
         agreement.calculateAgreement(peerPublicKey, rawSecret, 0);
 
-        // CHANGED: was "p2p_file_share_session_v1" — must match Python's info=b"p2p-session"
         HKDFBytesGenerator hkdf = new HKDFBytesGenerator(new SHA256Digest());
         hkdf.init(new HKDFParameters(rawSecret, null, "p2p-session".getBytes()));
 
@@ -54,7 +53,6 @@ public class SessionManager {
         return sharedKey;
     }
 
-    // ADDED: AES-256-GCM encrypt. Wire format: [IV (12B) | ciphertext+tag]
     // Matches Python FileEncryptor.encrypt()
     public byte[] encrypt(byte[] plaintext) throws Exception {
         byte[] iv = new byte[12];
@@ -68,7 +66,6 @@ public class SessionManager {
         return out;
     }
 
-    // ADDED: AES-256-GCM decrypt. Expects [IV (12B) | ciphertext+tag]
     // Matches Python FileEncryptor.decrypt()
     public byte[] decrypt(byte[] blob) throws Exception {
         byte[] iv = new byte[12];

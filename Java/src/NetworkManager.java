@@ -13,7 +13,6 @@ public class NetworkManager {
     private MessageDispatcher dispatcher;
 
     private final Map<String, SessionManager> pendingSessions = new ConcurrentHashMap<>();
-    // CHANGED: stores SessionManager instead of raw byte[] so callers can encrypt/decrypt
     private final Map<String, SessionManager> sessions = new ConcurrentHashMap<>();
 
     public NetworkManager(int port, IdentityManager identity, String myName) {
@@ -30,21 +29,19 @@ public class NetworkManager {
         Thread serverThread = new Thread(() -> {
             try {
                 serverSocket = new ServerSocket(port);
-                System.out.println("[+] Listening on port " + port);
+                System.out.println("[NETWORK] Listener started on port " + port);
                 while (true) {
                     Socket client = serverSocket.accept();
                     new Thread(() -> handleConnection(client)).start();
                 }
             } catch (IOException e) {
-                System.out.println("[-] Server error: " + e.getMessage());
+                System.out.println("[ERROR] Server error: " + e.getMessage());
             }
         });
         serverThread.setDaemon(true);
         serverThread.start();
     }
 
-    // CHANGED: was readLine() — Python sends no trailing newline so readLine() blocked forever.
-    // Now reads until the remote closes the connection, matching Python's _handle_client exactly.
     private void handleConnection(Socket client) {
         try (client) {
             ByteArrayOutputStream buffer = new ByteArrayOutputStream();
@@ -59,7 +56,7 @@ public class NetworkManager {
                 dispatcher.handle(message);
             }
         } catch (IOException e) {
-            System.out.println("[-] Connection error: " + e.getMessage());
+            System.out.println("[ERROR] Error handling client: " + e.getMessage());
         }
     }
 
@@ -70,7 +67,7 @@ public class NetworkManager {
             socket.getOutputStream().flush();
             socket.shutdownOutput(); 
         } catch (IOException e) {
-            System.out.println("[-] Send failed to " + address + ":" + port + " — " + e.getMessage());
+            System.out.println("[ERROR] Failed to send message to " + address + ":" + port + " — " + e.getMessage());
         }
     }
 
@@ -83,8 +80,6 @@ public class NetworkManager {
             byte[] mySignature    = identity.sign(myEphemeralRaw);
             byte[] myIdentityPub  = identity.getPublicKeyBytes();
 
-            // CHANGED: field names now match Python's initiate_handshake() exactly:
-            // "identity_key" and "ephemeral_share" (not "ephemeral_key")
             String initMsg = "{\"type\":\"HANDSHAKE_INIT\"," +
                              "\"sender\":\"" + myName + "\"," +
                              "\"payload\":{" +
@@ -95,17 +90,17 @@ public class NetworkManager {
                              "}}";
 
             sendMessage(address, port, initMsg);
-            System.out.println("[*] HANDSHAKE_INIT sent to " + peerName + ". Waiting for response...");
+            System.out.println("[SECURITY] Handshake dispatched to " + peerName + "...");
 
         } catch (Exception e) {
-            System.out.println("[-] Connect failed: " + e.getMessage());
+            System.out.println("[ERROR] Connect failed: " + e.getMessage());
             pendingSessions.remove(peerName);
         }
     }
 
-    // ADDED: broadcast PEER_LEFT to all known peers on shutdown, matches Python's broadcast_peer_left()
     public void broadcastPeerLeft(String senderId, Map<String, String[]> peers) {
         String msg = "{\"type\":\"PEER_LEFT\",\"sender\":\"" + senderId + "\",\"payload\":{}}";
+        System.out.println("[NETWORK] Broadcasting exit to " + peers.size() + " peers...");
         for (String[] info : peers.values()) {
             if (info != null && info[0] != null && info[1] != null) {
                 sendMessage(info[0], Integer.parseInt(info[1]), msg);
