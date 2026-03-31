@@ -22,25 +22,21 @@ public class IdentityManager {
     private final String privKeyFile;
 
     public IdentityManager(String username) {
-        //create a directory for the user if it doesn't exist yet
         java.io.File userDir = new java.io.File("data_" + username);
         if (!userDir.exists()) {
             userDir.mkdirs();
         }
 
-        //set the paths
         this.pubKeyFile = "data_" + username + "/identity.pub";
         this.privKeyFile = "data_" + username + "/identity.key";
     }
 
-    // PBKDF2 parameters
     private static final int PBKDF2_ITERATIONS = 200_000;
-    private static final int PBKDF2_KEY_LENGTH  = 256; // bits
-    private static final int SALT_SIZE          = 16;  // bytes
+    private static final int PBKDF2_KEY_LENGTH  = 256; 
+    private static final int SALT_SIZE          = 16;  
 
-    // AES-GCM parameters
-    private static final int NONCE_SIZE = 12; // bytes
-    private static final int GCM_TAG_LENGTH = 128; // bits
+    private static final int NONCE_SIZE = 12; 
+    private static final int GCM_TAG_LENGTH = 128; 
 
     private Ed25519PrivateKeyParameters privateKey;
     private Ed25519PublicKeyParameters  publicKey;
