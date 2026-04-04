@@ -53,7 +53,6 @@ public class SessionManager {
         return sharedKey;
     }
 
-    // Matches Python FileEncryptor.encrypt()
     public byte[] encrypt(byte[] plaintext) throws Exception {
         byte[] iv = new byte[12];
         new SecureRandom().nextBytes(iv);
@@ -66,7 +65,6 @@ public class SessionManager {
         return out;
     }
 
-    // Matches Python FileEncryptor.decrypt()
     public byte[] decrypt(byte[] blob) throws Exception {
         byte[] iv = new byte[12];
         byte[] ct = new byte[blob.length - 12];
