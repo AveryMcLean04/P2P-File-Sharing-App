@@ -13,10 +13,9 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.io.Console;
 
 /**
- * Main entry point for the P2P file sharing application
- * handles the CLI, local peer discovery using mDNS, 
+ * Main entry point for the P2P file sharing application.
+ * Handles the CLI, local peer discovery using mDNS, 
  * and coordinates the initialization of the identity and file management systems, as well as the network server.
- * 
  */
 
 public class PeerDiscovery {
@@ -26,6 +25,7 @@ public class PeerDiscovery {
     static final Map<String, String[]> activePeers = new ConcurrentHashMap<>();
     static final Map<String, String[]> pendingTransfers = new ConcurrentHashMap<>();
     static final Map<String, String[]> pendingOffers = new ConcurrentHashMap<>();
+    static final Map<String, String> verifiedCatalogs = new ConcurrentHashMap<>();
 
     static String autoApproveFile = null;
 
@@ -69,7 +69,7 @@ public class PeerDiscovery {
         // Clear password from memory after use
         Arrays.fill(password, '\0');
 
-        // make sure the vault is locked
+        // make sure the vault is locked on shutdown
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             System.out.println("\n[SYSTEM] Performing graceful shutdown...");
             fileManager.lockVaultAndCleanup();
@@ -89,7 +89,7 @@ public class PeerDiscovery {
         jmdns.registerService(info);
         System.out.println("[NETWORK] Registering mDNS: " + myName + " at " + localAddress.getHostAddress() + ":" + PORT);
 
-        // Start the netowrk components
+        // Start the network components
         NetworkManager network = new NetworkManager(PORT, identity, myName);
         MessageDispatcher dispatcher = new MessageDispatcher(network, identity, myName, fileManager);
         network.setDispatcher(dispatcher);
@@ -98,12 +98,7 @@ public class PeerDiscovery {
         // Listen for mDNS peer events
         jmdns.addServiceListener(SERVICE_TYPE, new ServiceListener() {
             public void serviceAdded(ServiceEvent event) {
-                // request twice to account for mDNS being slow
                 jmdns.requestServiceInfo(event.getType(), event.getName());
-                new Thread(() -> {
-                    try { Thread.sleep(1000); } catch (InterruptedException e) {}
-                    jmdns.requestServiceInfo(event.getType(), event.getName());
-                }).start();
             }
 
             public void serviceResolved(ServiceEvent event) {
@@ -148,6 +143,7 @@ public class PeerDiscovery {
 
         // Main loop for input
         Scanner scanner = new Scanner(System.in);
+        String target;
         while (true) {
             System.out.print("\n" + myName + " > ");
             if (!scanner.hasNextLine()) break;
@@ -203,7 +199,7 @@ public class PeerDiscovery {
                     }
 
                     try {
-                        // generate new keypair, sign it wiht old key
+                        // generate new keypair, sign it with old key
                         String[] migrationData = identity.migrateKey(migPassword);
                         String newKeyB64 = migrationData[0];
                         String sigB64 = migrationData[1];
@@ -231,25 +227,42 @@ public class PeerDiscovery {
                     }
                     break;
 
-
-                case "connect":
-                    if (activePeers.isEmpty()) {
-                        System.out.println("[ERROR] No active peers to connect to.");
-                    } else {
-                        System.out.print("Connect to (UserID): ");
-                        String target = scanner.nextLine().trim();
-                        if (!activePeers.containsKey(target)) {
-                            System.out.println("[ERROR] Peer '" + target + "' not found. Check 'list'.");
-                        } else {
-                            String[] peer = activePeers.get(target);
-                            network.connectToPeer(peer[0], Integer.parseInt(peer[1]), target);
-                        }
+                case "connect": {
+                    System.out.print("Connect to (UserID): ");
+                    target = scanner.nextLine().trim();
+                    
+                    if (!activePeers.containsKey(target)) {
+                        System.out.println("[ERROR] Peer '" + target + "' not found, make sure they are online and discoverable.");
+                        break;
                     }
+                    String[] peer = activePeers.get(target);
+                    network.connectToPeer(peer[0], Integer.parseInt(peer[1]), target);
+                    // below was used for java to java testing on the same machine, but doesn't reliably work
+                    // so it has been removed from the main flow
+                    // } else {
+                    //     /**
+                    //      * Manual connection fallback.
+                    //      * mDNS works reliably across devices on the same network, but can fail
+                    //      * when running multiple clients on the same machine (e.g. during local testing),
+                    //      * since JmDNS may not resolve loopback addresses correctly. This fallback
+                    //      * allows a direct IP and port to be entered so connections can still be made.
+                    //      */
+                    //     System.out.println("[SYSTEM] Peer not found via mDNS. Manual connection available.");
+                    //     System.out.print("Enter IP Address (e.g., 127.0.0.1): ");
+                    //     String manualIp = scanner.nextLine().trim();
+                    //     System.out.print("Enter Port (e.g., 5001): ");
+                    //     String manualPort = scanner.nextLine().trim();
+                        
+                    //     // Register the peer manually so session state can be tracked
+                    //     activePeers.put(target, new String[]{manualIp, manualPort, null});
+                    //     network.connectToPeer(manualIp, Integer.parseInt(manualPort), target);
+                    // }
                     break;
+                }
 
                 case "chat": {
                     System.out.print("Recipient: ");
-                    String target = scanner.nextLine().trim();
+                    target = scanner.nextLine().trim();
                     if (!activePeers.containsKey(target)) {
                         System.out.println("[ERROR] Peer '" + target + "' not found.");
                         break;
@@ -275,7 +288,7 @@ public class PeerDiscovery {
 
                 case "fetch":
                     System.out.print("Fetch file list from (UserID): ");
-                    String target = scanner.nextLine().trim();
+                    target = scanner.nextLine().trim();
                     if (!activePeers.containsKey(target)) {
                         System.out.println("[ERROR] Peer '" + target + "' not found.");
                     } else if (!network.hasSession(target)) {
@@ -355,6 +368,7 @@ public class PeerDiscovery {
                         System.out.println("[ERROR] Request failed: " + e.getMessage());
                     }
                     break;
+
                 case "y":
                 case "yes": {
                     if (!pendingOffers.isEmpty()) {

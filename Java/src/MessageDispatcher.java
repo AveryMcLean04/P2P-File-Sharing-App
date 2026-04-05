@@ -39,22 +39,55 @@ public class MessageDispatcher {
                 case "HANDSHAKE_RESPONSE": handleHandshakeResponse(sender, json); break;
                 case "CHAT_MESSAGE":       handleChatMessage(sender, json);       break;
                 case "FILE_LIST_REQUEST":
-                    // Generates a JSON array of the shared files directory and sends it to the requester
+                    /**
+                     * Generates a JSON array of shared files, creates a manifest with hashes,
+                     * signs it for offline verification (Req 5), and sends it to the requester.
+                     */
                     List<String> files = fileManager.listSharedFiles();
                     StringBuilder jsonArray = new StringBuilder("[");
+                    StringBuilder manifestBuilder = new StringBuilder("[");
+
                     for (int i = 0; i < files.size(); i++) {
-                        jsonArray.append("\"").append(files.get(i)).append("\"");
-                        if (i < files.size() - 1) jsonArray.append(", ");
+                        String fName = files.get(i);
+                        jsonArray.append("\"").append(fName).append("\"");
+                        
+                        // Get file hash for the manifest
+                        String fHash = "";
+                        try {
+                            java.nio.file.Path fPath = java.nio.file.Paths.get("data_" + myName + "/shared/" + fName);
+                            byte[] fData = java.nio.file.Files.readAllBytes(fPath);
+                            byte[] hBytes = java.security.MessageDigest.getInstance("SHA-256").digest(fData);
+                            fHash = org.bouncycastle.util.encoders.Hex.toHexString(hBytes);
+                        } catch (Exception e) {}
+
+                        manifestBuilder.append("{\"filename\":\"").append(fName).append("\", \"hash\":\"").append(fHash).append("\"}");
+
+                        if (i < files.size() - 1) {
+                            jsonArray.append(", ");
+                            manifestBuilder.append(", ");
+                        }
                     }
                     jsonArray.append("]");
+                    manifestBuilder.append("]");
 
-                    String response = "{\"type\":\"FILE_LIST_RESPONSE\"," +
-                                        "\"sender\":\"" + myName + "\"," +
-                                        "\"payload\":{\"files\":" + jsonArray.toString() + "}}";
+                    try {
+                        byte[] manifestBytes = manifestBuilder.toString().getBytes("UTF-8");
+                        byte[] manifestSig = identity.sign(manifestBytes);
 
-                    String[] peerInfo = PeerDiscovery.activePeers.get(sender);
-                    if (peerInfo != null) {
-                        network.sendMessage(peerInfo[0], Integer.parseInt(peerInfo[1]), response);
+                        String response = "{\"type\":\"FILE_LIST_RESPONSE\"," +
+                                            "\"sender\":\"" + myName + "\"," +
+                                            "\"payload\":{" +
+                                            "\"files\":" + jsonArray.toString() + "," +
+                                            "\"manifest_bytes\":\"" + Base64.getEncoder().encodeToString(manifestBytes) + "\"," +
+                                            "\"manifest_sig\":\"" + Base64.getEncoder().encodeToString(manifestSig) + "\"" +
+                                            "}}";
+
+                        String[] peerInfo = PeerDiscovery.activePeers.get(sender);
+                        if (peerInfo != null) {
+                            network.sendMessage(peerInfo[0], Integer.parseInt(peerInfo[1]), response);
+                        }
+                    } catch (Exception e) {
+                        System.out.println("[ERROR] Failed to send file list: " + e.getMessage());
                     }
                     break;
                 case "FILE_LIST_RESPONSE":
@@ -109,8 +142,8 @@ public class MessageDispatcher {
     private void handleHandshakeInit(String sender, String json) {
         /**
          * Processes the first step of a secure connection. 
-         * Verifies the sender's identity signature, starts a new session, 
-         * and sends back our own ephemeral key and identity signature.
+         * Verifies the sender's identity signature and saves it to the peer table,
+         * then sends back our own ephemeral key and identity signature.
          */
         try {
             String payload        = extractPayload(json);
@@ -119,8 +152,16 @@ public class MessageDispatcher {
             byte[] peerIdentityKey = Base64.getDecoder().decode(extractField(payload, "identity_key"));
 
             if (!identity.verify(peerIdentityKey, peerEphemeral, peerSig)) {
-                // Use the peer's long-term key to verify they actually signed the session request to prevent impersonation attacks
                 System.out.print("\r\033[K[SECURITY] Handshake signature spoofing detected from " + sender + "!\n" + myName + " > ");
+                return;
+            }
+
+            String[] peerInfo = PeerDiscovery.activePeers.get(sender);
+            if (peerInfo != null) {
+                peerInfo[2] = Base64.getEncoder().encodeToString(peerIdentityKey);
+                PeerDiscovery.activePeers.put(sender, peerInfo);
+            } else {
+                System.out.print("\r\033[K[ERROR] Cannot respond to " + sender + " — not in peer table\n" + myName + " > ");
                 return;
             }
 
@@ -130,12 +171,6 @@ public class MessageDispatcher {
 
             byte[] myEphemeral = session.getPublicBytes();
             byte[] mySignature = identity.sign(myEphemeral);
-
-            String[] peerInfo = PeerDiscovery.activePeers.get(sender);
-            if (peerInfo == null) {
-                System.out.print("\r\033[K[ERROR] Cannot respond to " + sender + " — not in peer table\n" + myName + " > ");
-                return;
-            }
 
             String response = "{\"type\":\"HANDSHAKE_RESPONSE\"," +
                   "\"sender\":\"" + myName + "\"," +
@@ -155,9 +190,8 @@ public class MessageDispatcher {
 
     private void handleHandshakeResponse(String sender, String json) {
         /**
-         * Completes the mutual authentication process.
-         * Verifies the peer's response signature and finalizes the 
-         * derived session key for future encryption.
+         * Completes the handshake initiated by this node and saves the peer's 
+         * long-term identity key for later manifest verification (Req 5).
          */
         try {
             SessionManager pendingSession = network.getPendingSession(sender);
@@ -169,25 +203,25 @@ public class MessageDispatcher {
             String payload        = extractPayload(json);
             byte[] peerEphemeral  = Base64.getDecoder().decode(extractField(payload, "ephemeral_key"));
             byte[] peerSig        = Base64.getDecoder().decode(extractField(payload, "signature"));
+            byte[] peerIdentityKey = Base64.getDecoder().decode(extractField(payload, "identity_key"));
 
             String[] peerInfo = PeerDiscovery.activePeers.get(sender);
-            if (peerInfo != null && peerInfo[2] != null) {
-                byte[] peerIdentityKey = Base64.getDecoder().decode(peerInfo[2]);
+            if (peerInfo != null) {
+                peerInfo[2] = Base64.getEncoder().encodeToString(peerIdentityKey);
+                PeerDiscovery.activePeers.put(sender, peerInfo);
+                
                 if (!identity.verify(peerIdentityKey, peerEphemeral, peerSig)) {
                     System.out.print("\r\033[K[SECURITY] Invalid identity signature from " + sender + "!\n" + myName + " > ");
                     network.removePendingSession(sender);
                     return;
                 }
-            } else {
-                System.out.print("\r\033[K[SECURITY] WARNING: Identity not verified for " + sender + " (no public key in mDNS)\n" + myName + " > ");
             }
 
             pendingSession.deriveSharedSecret(peerEphemeral);
             network.storeSession(sender, pendingSession);
             network.removePendingSession(sender);
 
-            System.out.print("\r\033[K[SECURITY] Mutual trust established. " + sender + " is now SECURE.\n" + myName + " > ");
-
+            System.out.print("\r\033[K[SECURITY] Mutual trust established with " + sender + ".\n" + myName + " > ");
         } catch (Exception e) {
             System.out.print("\r\033[K[ERROR] Handshake Response Failed: " + e.getMessage() + "\n" + myName + " > ");
         }
@@ -214,13 +248,56 @@ public class MessageDispatcher {
 
     private void handleFileListResponse(String sender, String json) {
         /**
-         * Parses the JSON array of files offered by a peer 
-         * and prints them to the console for the user to see.
+         * Parses the JSON array of files offered by a peer, verifies the signed 
+         * manifest for offline redundancy (Req 5), and prints the files to the console.
          */
         try {
             String payload = extractPayload(json);
-            int startBracket = payload.indexOf("[");
-            int endBracket = payload.lastIndexOf("]");
+
+            try {
+                // Search for the manifest fields after the files array closes to avoid the
+                // hand-made parser getting confused by filenames inside the array
+                int filesEnd = payload.indexOf("]", payload.indexOf("\"files\":"));
+                String manifestRegion = filesEnd != -1 ? payload.substring(filesEnd) : payload;
+                String manifestB64 = extractField(manifestRegion, "manifest_bytes");
+                String sigB64 = extractField(manifestRegion, "manifest_sig");
+                
+                if (!manifestB64.isEmpty() && !sigB64.isEmpty()) {
+                    byte[] manifestBytes = Base64.getDecoder().decode(manifestB64);
+                    byte[] signature = Base64.getDecoder().decode(sigB64);
+                    
+                    String[] pInfo = PeerDiscovery.activePeers.get(sender);
+                    if (pInfo != null && pInfo[2] != null) {
+                        byte[] peerPubKey = Base64.getDecoder().decode(pInfo[2]);
+                        if (identity.verify(peerPubKey, manifestBytes, signature)) {
+                            String manifestStr = new String(manifestBytes, "UTF-8");
+                            int idx = 0;
+                            // Manually parse the JSON array to avoid needing external libraries
+                            while ((idx = manifestStr.indexOf("{\"filename\":", idx)) != -1) {
+                                int endObj = manifestStr.indexOf("}", idx);
+                                if (endObj == -1) break;
+                                String obj = manifestStr.substring(idx, endObj + 1);
+                                String fName = extractField(obj, "filename");
+                                String fHash = extractField(obj, "hash");
+                                PeerDiscovery.verifiedCatalogs.put(fName, fHash);
+                                System.out.println("\r\033[K[SECURITY] Locked in ground-truth hash for '" + fName + "'");
+                                idx = endObj + 1;
+                            }
+                        } else {
+                            System.out.println("\r\033[K[ERROR] CRITICAL: Manifest signature verification FAILED!");
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                System.out.println("\r\033[K[WARNING] Received catalog without a valid signed manifest.");
+            }
+
+            // Safely locate the "files" array specifically to avoid the manifest array
+            int filesKeyIndex = payload.indexOf("\"files\":");
+            if (filesKeyIndex == -1) throw new RuntimeException("Missing 'files' key");
+            
+            int startBracket = payload.indexOf("[", filesKeyIndex);
+            int endBracket = payload.indexOf("]", startBracket);
 
             if (startBracket == -1 || endBracket == -1 || endBracket < startBracket) {
                 System.out.print("\r\033[K[ERROR] Invalid FILE_LIST_RESPONSE from " + sender + "\n" + myName + " > ");
@@ -260,11 +337,17 @@ public class MessageDispatcher {
             String encodedSig = extractField(payload, "signature");
 
             SessionManager session = network.getSession(sender);
-            byte[] peerIdentityKey = Base64.getDecoder().decode(PeerDiscovery.activePeers.get(sender)[2]);
+            String[] peerData = PeerDiscovery.activePeers.get(sender);
+            
+            if (peerData == null || peerData[2] == null) {
+                System.out.print("\r\033[K[ERROR] Cannot verify transfer from " + sender + " (missing identity key)\n" + myName + " > ");
+                return;
+            }
+            byte[] peerIdentityKey = Base64.getDecoder().decode(peerData[2]);
 
             // Ensure the file sender is who they claim to be by verifying the signature on the hashed file.
             byte[] signature = Base64.getDecoder().decode(encodedSig);
-            if (!identity.verify(peerIdentityKey, receivedHash.getBytes(), signature)) {
+            if (!identity.verify(peerIdentityKey, receivedHash.getBytes("UTF-8"), signature)) {
                 System.out.print("\r\033[K[SECURITY] CRITICAL: Identity signature mismatch on " + fileName + "!\n" + myName + " > ");
                 return;
             }
@@ -282,6 +365,16 @@ public class MessageDispatcher {
                 return;
             }
 
+            if (PeerDiscovery.verifiedCatalogs.containsKey(fileName)) {
+                String expectedHash = PeerDiscovery.verifiedCatalogs.get(fileName);
+                System.out.println("\r\033[K[SECURITY] Verifying origin hash against ground-truth manifest...");
+                if (!actualHash.equalsIgnoreCase(expectedHash)) {
+                    System.out.print("\r\033[K[SECURITY] ORIGIN TAMPER DETECTED: '" + fileName + "' does not match the original creator's manifest!\n" + myName + " > ");
+                    return;
+                }
+            } else {
+                System.out.println("\r\033[K[WARNING] No verified manifest found for '" + fileName + "'. Bypassing origin integrity check!");
+            }
             fileManager.saveIncomingFile(fileName, decryptedData);
             System.out.print("\r\033[K[FILE] Securely received and stored: " + fileName + "\n" + myName + " > ");
         } catch (Exception e) {
