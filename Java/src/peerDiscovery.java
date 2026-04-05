@@ -12,18 +12,28 @@ import java.util.Arrays;
 import java.util.concurrent.ConcurrentHashMap;
 import java.io.Console;
 
+/**
+ * Main entry point for the P2P file sharing application
+ * handles the CLI, local peer discovery using mDNS, 
+ * and coordinates the initialization of the identity and file management systems, as well as the network server.
+ * 
+ */
+
 public class PeerDiscovery {
 
     static final String SERVICE_TYPE = "_cisc468secshare._tcp.local.";
 
     static final Map<String, String[]> activePeers = new ConcurrentHashMap<>();
     static final Map<String, String[]> pendingTransfers = new ConcurrentHashMap<>();
-    
     static final Map<String, String[]> pendingOffers = new ConcurrentHashMap<>();
 
     static String autoApproveFile = null;
 
     static InetAddress getLocalNetworkAddress() throws Exception {
+        /**
+         * Helper to find the local IP address by trying to connect
+         * to an external socket
+         */
         try (DatagramSocket socket = new DatagramSocket()) {
             socket.connect(InetAddress.getByName("8.8.8.8"), 80);
             return InetAddress.getByName(socket.getLocalAddress().getHostAddress());
@@ -31,9 +41,14 @@ public class PeerDiscovery {
     }
 
     public static void main(String[] args) throws Exception {
+        /**
+         * Sets up the environment, handles user login, starts
+         * network listener and runs the main loop
+         */
         final int PORT = (args.length > 1) ? Integer.parseInt(args[1]) : 5000;
         String myName = (args.length > 0) ? args[0] : "Bob_java";
 
+        // Securely read master password for identity and vault
         Console console = System.console();
         char[] password;
         if (console != null) {
@@ -44,23 +59,28 @@ public class PeerDiscovery {
             password = scanner.nextLine().toCharArray();
         }
 
+        // Initialize security and file systems
         IdentityManager identity = new IdentityManager(myName);
         identity.loadOrGenerate(password);
 
         FileManager fileManager = new FileManager(myName);
         fileManager.unlockVault(password);
 
+        // Clear password from memory after use
         Arrays.fill(password, '\0');
 
+        // make sure the vault is locked
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             System.out.println("\n[SYSTEM] Performing graceful shutdown...");
             fileManager.lockVaultAndCleanup();
         }));
 
+        // Start mDNS discovery and network server
         InetAddress localAddress = getLocalNetworkAddress();
         System.out.println("[NETWORK] Starting mDNS peer discovery...");
         JmDNS jmdns = JmDNS.create(localAddress);
 
+        // Broadcast that we are online with our public key
         String pubKeyBase64 = Base64.getEncoder().encodeToString(identity.getPublicKeyBytes());
         Map<String, String> props = new HashMap<>();
         props.put("user_id", myName);
@@ -69,13 +89,16 @@ public class PeerDiscovery {
         jmdns.registerService(info);
         System.out.println("[NETWORK] Registering mDNS: " + myName + " at " + localAddress.getHostAddress() + ":" + PORT);
 
+        // Start the netowrk components
         NetworkManager network = new NetworkManager(PORT, identity, myName);
         MessageDispatcher dispatcher = new MessageDispatcher(network, identity, myName, fileManager);
         network.setDispatcher(dispatcher);
         network.startServer();
 
+        // Listen for mDNS peer events
         jmdns.addServiceListener(SERVICE_TYPE, new ServiceListener() {
             public void serviceAdded(ServiceEvent event) {
+                // request twice to account for mDNS being slow
                 jmdns.requestServiceInfo(event.getType(), event.getName());
                 new Thread(() -> {
                     try { Thread.sleep(1000); } catch (InterruptedException e) {}
@@ -123,6 +146,7 @@ public class PeerDiscovery {
         System.out.println("==================================================");
         System.out.println("[SYSTEM] Vault Unlocked. System Ready.");
 
+        // Main loop for input
         Scanner scanner = new Scanner(System.in);
         while (true) {
             System.out.print("\n" + myName + " > ");
@@ -179,6 +203,7 @@ public class PeerDiscovery {
                     }
 
                     try {
+                        // generate new keypair, sign it wiht old key
                         String[] migrationData = identity.migrateKey(migPassword);
                         String newKeyB64 = migrationData[0];
                         String sigB64 = migrationData[1];
@@ -191,6 +216,7 @@ public class PeerDiscovery {
                         "}";
                         String msg = "{\"type\":\"KEY_MIGRATION_NOTIFY\",\"sender\":\"" + myName + "\",\"payload\":" + payload + "}";
 
+                        // Broadcast new key to all active peers
                         if (activePeers.isEmpty()) {
                             System.out.println("[SYSTEM] Key migrated locally. No active peers to notify.");
                         } else {

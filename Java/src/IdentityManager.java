@@ -16,6 +16,12 @@ import java.nio.file.*;
 import java.security.SecureRandom;
 import java.util.Arrays;
 
+/**
+ * Handles the user's permanent cryptographic identity. 
+ * This class generates Ed25519 keypairs for signing and verifies that 
+ * the private key stays encrypted on disk using the user's master password.
+ */
+
 public class IdentityManager {
 
     private final String pubKeyFile;
@@ -31,6 +37,7 @@ public class IdentityManager {
         this.privKeyFile = "data_" + username + "/identity.key";
     }
 
+    // Constants for key encryption
     private static final int PBKDF2_ITERATIONS = 200_000;
     private static final int PBKDF2_KEY_LENGTH  = 256; 
     private static final int SALT_SIZE          = 16;  
@@ -42,6 +49,11 @@ public class IdentityManager {
     private Ed25519PublicKeyParameters  publicKey;
 
     public void loadOrGenerate(char[] password) throws Exception {
+        /**
+         * Checks if keys already exist for this user
+         * If they do, load them, if not, generates a new keypair
+         * and saves them
+         */
         if (keyFilesExist()) {
             loadKeys(password);
         } else {
@@ -55,6 +67,10 @@ public class IdentityManager {
     }
 
     private void generateAndSave(char[] password) throws Exception {
+        /**
+         * Creates the new Ed25519 keypair and
+         * securely stores teh private one with the password
+         */
         System.out.println("[SECURITY] No identity found. Generating new keys...");
 
         Ed25519KeyPairGenerator keyGen = new Ed25519KeyPairGenerator();
@@ -70,6 +86,10 @@ public class IdentityManager {
     }
 
     private void loadKeys(char[] password) throws Exception {
+        /**
+         * Reads the keys from the disk, the private key is
+         * decrypted in memory using the master password
+         */
         byte[] pubKeyBytes = Files.readAllBytes(Paths.get(pubKeyFile));
         this.publicKey = new Ed25519PublicKeyParameters(pubKeyBytes, 0);
 
@@ -81,11 +101,17 @@ public class IdentityManager {
     }
 
     private byte[] encryptPrivateKey(byte[] rawPrivKey, char[] password) throws Exception {
+        /**
+         * Protects teh private key before writing to the disk
+         * Uses PBKDF2 to derive the AES key from the password,
+         * then encrypts the private key using AES-GCM
+         */
         SecureRandom rng = new SecureRandom();
 
         byte[] salt = new byte[SALT_SIZE];
         rng.nextBytes(salt);
 
+        // Derive a strong 256-bit AES key from the user's password and the salt
         SecretKeyFactory factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
         PBEKeySpec spec = new PBEKeySpec(password, salt, PBKDF2_ITERATIONS, PBKDF2_KEY_LENGTH);
         byte[] aesKeyBytes = factory.generateSecret(spec).getEncoded();
@@ -98,6 +124,7 @@ public class IdentityManager {
         cipher.init(Cipher.ENCRYPT_MODE, aesKey, new GCMParameterSpec(GCM_TAG_LENGTH, nonce));
         byte[] ciphertext = cipher.doFinal(rawPrivKey);
 
+        // Store salt + nonce + ciphertext together
         byte[] results = new byte[salt.length + nonce.length + ciphertext.length];
         System.arraycopy(salt, 0, results, 0, salt.length);
         System.arraycopy(nonce, 0, results, salt.length, nonce.length);
@@ -106,6 +133,10 @@ public class IdentityManager {
     }
 
     private byte[] decryptPrivateKey(byte[] stored, char[] password) throws Exception {
+        /**
+         * Reverses the encryption process to retrieve the raw private key bytes
+         * to be used for signing messages
+         */
         byte[] salt = Arrays.copyOfRange(stored, 0, SALT_SIZE);
         byte[] nonce = Arrays.copyOfRange(stored, SALT_SIZE, SALT_SIZE + NONCE_SIZE);
         byte[] ciphertext = Arrays.copyOfRange(stored, SALT_SIZE + NONCE_SIZE, stored.length);
@@ -121,6 +152,10 @@ public class IdentityManager {
     }
 
     public byte[] sign(byte[] data) {
+        /**
+        * Generates a digital signature for a piece of data using 
+        * the user's private Ed25519 key.
+        */
         Ed25519Signer signer = new Ed25519Signer();
         signer.init(true, privateKey);
         signer.update(data, 0, data.length);
@@ -128,6 +163,9 @@ public class IdentityManager {
     }
 
     public boolean verify(byte[] peerPublicKeyBytes, byte[] data, byte[] signature) {
+        /**
+         * Verifies that a signature was actually craeted by the owner of the public key
+         */
         Ed25519PublicKeyParameters peerPubKey = new Ed25519PublicKeyParameters(peerPublicKeyBytes, 0);
         Ed25519Signer verifier = new Ed25519Signer();
         verifier.init(false, peerPubKey);
@@ -140,6 +178,10 @@ public class IdentityManager {
     }
 
     public void printFingerprint() {
+        /**
+         * creates a short hash as a fingerprint of the public key
+         * for easy identification and verification in the terminal
+         */
         SHA256Digest digest = new SHA256Digest();
         byte[] fingerprint = new byte[digest.getDigestSize()];
         digest.update(getPublicKeyBytes(), 0, getPublicKeyBytes().length);
@@ -152,6 +194,9 @@ public class IdentityManager {
     }
 
     private void saveKeys(char[] password) throws Exception {
+        /**
+         * saves the keys to the disk, with the private key being encrypted with the user's password for protection
+         */
         Files.write(Paths.get(pubKeyFile), publicKey.getEncoded());
 
         byte[] encryptedPrivKey = encryptPrivateKey(privateKey.getEncoded(), password);
@@ -161,6 +206,11 @@ public class IdentityManager {
     }
     
     public String[] migrateKey(char[] password) throws Exception {
+        /**
+         * swaps the current identity keypair for a new one, it signs the new
+         * public key with the old private key so that peers can verif that
+         * the change was authorized by the original owner
+         */
         System.out.println("[SECURITY] Generating new Identity Keypair for migration...");
 
         org.bouncycastle.crypto.generators.Ed25519KeyPairGenerator keyGen = new org.bouncycastle.crypto.generators.Ed25519KeyPairGenerator();

@@ -4,6 +4,12 @@ import java.util.ArrayList;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 
+/**
+ * MessageDispatcher is responsible for handling incoming JSON messages
+ * from peers, parsing them, and routing them to the appropriate handlers,
+ * based on the message type.
+ */
+
 public class MessageDispatcher {
 
     private final NetworkManager network;
@@ -19,6 +25,11 @@ public class MessageDispatcher {
     }
 
     public void handle(String json) {
+        /**
+         * Main entry point for all incoming network data.
+         * Extracts the message type and sender, then uses a switch 
+         * statement to trigger the appropriate logic.
+         */
         try {
             String type   = extractField(json, "type");
             String sender = extractField(json, "sender");
@@ -28,6 +39,7 @@ public class MessageDispatcher {
                 case "HANDSHAKE_RESPONSE": handleHandshakeResponse(sender, json); break;
                 case "CHAT_MESSAGE":       handleChatMessage(sender, json);       break;
                 case "FILE_LIST_REQUEST":
+                    // Generates a JSON array of the shared files directory and sends it to the requester
                     List<String> files = fileManager.listSharedFiles();
                     StringBuilder jsonArray = new StringBuilder("[");
                     for (int i = 0; i < files.size(); i++) {
@@ -49,12 +61,14 @@ public class MessageDispatcher {
                     handleFileListResponse(sender, json);
                     break;
                 case "PUSH_PROPOSAL":
+                    // Handles a peer offering to send us a file
                     String pushPayload = extractPayload(json);
                     String pushFile = extractField(pushPayload, "filename"); 
                     System.out.print("\r\033[K\n\007[!PROPOSAL] " + sender + " wants to SEND you: " + pushFile + "\nAction required: Type 'yes' or 'no'\n" + myName + " > ");
                     PeerDiscovery.pendingOffers.put(sender, new String[]{pushFile});
                     break;
                 case "TRANSFER_REQUEST":
+                    // Handles a peer asking to download one of our files
                     String reqPayload = extractPayload(json);
                     String reqFile = extractField(reqPayload, "filename"); 
     
@@ -93,6 +107,11 @@ public class MessageDispatcher {
     }
 
     private void handleHandshakeInit(String sender, String json) {
+        /**
+         * Processes the first step of a secure connection. 
+         * Verifies the sender's identity signature, starts a new session, 
+         * and sends back our own ephemeral key and identity signature.
+         */
         try {
             String payload        = extractPayload(json);
             byte[] peerEphemeral  = Base64.getDecoder().decode(extractField(payload, "ephemeral_share"));
@@ -100,6 +119,7 @@ public class MessageDispatcher {
             byte[] peerIdentityKey = Base64.getDecoder().decode(extractField(payload, "identity_key"));
 
             if (!identity.verify(peerIdentityKey, peerEphemeral, peerSig)) {
+                // Use the peer's long-term key to verify they actually signed the session request to prevent impersonation attacks
                 System.out.print("\r\033[K[SECURITY] Handshake signature spoofing detected from " + sender + "!\n" + myName + " > ");
                 return;
             }
@@ -134,6 +154,11 @@ public class MessageDispatcher {
     }
 
     private void handleHandshakeResponse(String sender, String json) {
+        /**
+         * Completes the mutual authentication process.
+         * Verifies the peer's response signature and finalizes the 
+         * derived session key for future encryption.
+         */
         try {
             SessionManager pendingSession = network.getPendingSession(sender);
             if (pendingSession == null) {
@@ -169,6 +194,10 @@ public class MessageDispatcher {
     }
 
     private void handleChatMessage(String sender, String json) {
+        /**
+         * Decrypts and displays an incoming chat message.
+         * Requires an established secure session to proceed.
+         */
         try {
             SessionManager session = network.getSession(sender);
             if (session == null) {
@@ -184,6 +213,10 @@ public class MessageDispatcher {
     }
 
     private void handleFileListResponse(String sender, String json) {
+        /**
+         * Parses the JSON array of files offered by a peer 
+         * and prints them to the console for the user to see.
+         */
         try {
             String payload = extractPayload(json);
             int startBracket = payload.indexOf("[");
@@ -214,6 +247,11 @@ public class MessageDispatcher {
     }
 
     private void handleTransferAccept(String sender, String json) {
+        /**
+         * Processes an incoming file transfer. 
+         * Verifies the digital signature for identity, decrypts the file data, 
+         * and checks the SHA-256 hash to ensure the file wasn't tampered with.
+         */
         try {
             String payload = extractPayload(json);
             String fileName = extractField(payload, "filename");
@@ -224,6 +262,7 @@ public class MessageDispatcher {
             SessionManager session = network.getSession(sender);
             byte[] peerIdentityKey = Base64.getDecoder().decode(PeerDiscovery.activePeers.get(sender)[2]);
 
+            // Ensure the file sender is who they claim to be by verifying the signature on the hashed file.
             byte[] signature = Base64.getDecoder().decode(encodedSig);
             if (!identity.verify(peerIdentityKey, receivedHash.getBytes(), signature)) {
                 System.out.print("\r\033[K[SECURITY] CRITICAL: Identity signature mismatch on " + fileName + "!\n" + myName + " > ");
@@ -233,6 +272,7 @@ public class MessageDispatcher {
             byte[] encryptedThing = Base64.getDecoder().decode(encodedData);
             byte[] decryptedData = session.decrypt(encryptedThing);
 
+            // Verify the integrity of the file by comparing the received hash with a locally computed hash, using SHA-256.
             String actualHash = org.bouncycastle.util.encoders.Hex.toHexString(
                 java.security.MessageDigest.getInstance("SHA-256").digest(decryptedData)
             );
@@ -250,6 +290,11 @@ public class MessageDispatcher {
     }
 
     private void handleOfferAccept(String sender, String json) {
+        /**
+         * Triggered when a peer accepts a file we offered.
+         * Reads the file, hashes it, signs the hash, and sends the 
+         * encrypted data over the network.
+         */
         try {
             String payload = extractPayload(json);
             String fileName = extractField(payload, "filename");
@@ -284,6 +329,10 @@ public class MessageDispatcher {
     }
 
     public void executeApprovedTransfer(String target, String fileName) {
+        /**
+         * Helper method to bundle, encrypt, and send a file once a 
+         * download request has been approved by the user.
+         */
         try {
             java.nio.file.Path filePath = Paths.get("data_" + myName + "/shared/" + fileName);
             if (!Files.exists(filePath)) {
@@ -318,9 +367,15 @@ public class MessageDispatcher {
     }
 
     private void handleKeyMigration(String sender, String json) {
+        /**
+         * Handles a peer updating their long-term identity. 
+         * Verifies that the new key is signed by the old key to 
+         * maintain the chain of trust before updating the peer table.
+         */
         try {
             String payload = extractPayload(json);
 
+            // Supports multiple possible field names for the new key
             String newKeyB64 = "";
             if (payload.contains("\"new_identity_key\"")) {
                 newKeyB64 = extractField(payload, "new_identity_key");
@@ -357,6 +412,7 @@ public class MessageDispatcher {
             }
             byte[] oldKeyBytes = Base64.getDecoder().decode(peerInfo[2]);
 
+            // Verifies that the new key is signed by the old key.
             if (!identity.verify(oldKeyBytes, newKeyBytes, signatureBytes)) {
                 System.out.print("\r\033[K[SECURITY] CRITICAL: Forged migration attempt from " + sender + "!\n" + myName + " > ");
                 network.removeSession(sender);
@@ -374,26 +430,38 @@ public class MessageDispatcher {
     }
 
     private void handlePeerLeft(String sender) {
+        /**
+         * Cleans up local state when a peer explicitly notifies us 
+         * that they are disconnecting.
+         */
         PeerDiscovery.activePeers.remove(sender);
         network.removeSession(sender);
         System.out.print("\r\033[K[NETWORK] Peer Offline: " + sender + "\n" + myName + " > ");
     }
 
     static String extractField(String json, String key) {
+        /**
+         * Manual JSON parser to extract a specific string field 
+         * without using external libraries.
+         */
         String keyMarker = "\"" + key + "\"";
         int searchFrom = 0;
         while (true) {
+            // looking for the key in the JSON string
             int keyIndex = json.indexOf(keyMarker, searchFrom);
             if (keyIndex == -1) throw new RuntimeException("field '" + key + "' not found");
             int afterKey = keyIndex + keyMarker.length();
             int colonCandidate = afterKey;
+            // skipping any whitespace after the colon
             while (colonCandidate < json.length() && json.charAt(colonCandidate) == ' ') colonCandidate++;
             if (colonCandidate < json.length() && json.charAt(colonCandidate) == ':') {
+                // find the opening quote of the value
                 int startQuote = json.indexOf("\"", colonCandidate + 1);
                 if (startQuote == -1) throw new RuntimeException("malformed JSON value for " + key);
                 int endQuote = startQuote + 1;
                 while (endQuote < json.length()) {
                     char c = json.charAt(endQuote);
+                    // handle escaped characters
                     if (c == '\\') { endQuote += 2; }
                     else if (c == '\"') { break; }
                     else { endQuote++; }
@@ -406,6 +474,11 @@ public class MessageDispatcher {
     }
 
     static String extractPayload(String json) {
+        /**
+         * Extracts a nested JSON object from the "payload" field 
+         * by tracking opening and closing braces to be sure to capture the
+         * entire object, in the case of internal fields.
+         */
         int start = json.indexOf("\"payload\"");
         if (start == -1) throw new RuntimeException("no payload found");
         
@@ -424,6 +497,11 @@ public class MessageDispatcher {
     }
 
     static String extractRawPayload(String json) {
+        /**
+         * Extracts the raw string content of a payload field, 
+         * typically used the CHAT_MESSAGE type where the payload is 
+         * just a string instead of a nested JSON object.
+         */
         String search = "\"payload\": \"";
         int start = json.indexOf(search);
         if (start == -1) {

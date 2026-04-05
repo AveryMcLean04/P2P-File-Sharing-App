@@ -4,6 +4,12 @@ import java.util.Base64;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
+/**
+ * Handles all network communication.
+ * Responsible for starting the server listener, sending JSON messages to peers, initiating
+ * the cryptographic handshake process, and maintains session states for connected peers.
+ */
+
 public class NetworkManager {
 
     private final int port;
@@ -12,6 +18,7 @@ public class NetworkManager {
     private final String myName;
     private MessageDispatcher dispatcher;
 
+    // one map for sessions that are already established, and one for sessions that are in the process of being established
     private final Map<String, SessionManager> pendingSessions = new ConcurrentHashMap<>();
     private final Map<String, SessionManager> sessions = new ConcurrentHashMap<>();
 
@@ -26,12 +33,17 @@ public class NetworkManager {
     }
 
     public void startServer() {
+        /**
+         * Starts a thread that listens for incoming TCP connections on the specified port.
+         * When a peer connects, it spawns a new thread to handle that message.
+         */
         Thread serverThread = new Thread(() -> {
             try {
                 serverSocket = new ServerSocket(port);
                 System.out.println("[NETWORK] Listener started on port " + port);
                 while (true) {
                     Socket client = serverSocket.accept();
+                    // use multithreading to ensure a slow or unresponsive peer doesn't block the server
                     new Thread(() -> handleConnection(client)).start();
                 }
             } catch (IOException e) {
@@ -43,6 +55,10 @@ public class NetworkManager {
     }
 
     private void handleConnection(Socket client) {
+        /**
+         * Reads the raw JSON message from the client's socket, converts it to a UTF-8 string,
+         * and passes it to the MessageDispatcher for processing.
+         */
         try (client) {
             ByteArrayOutputStream buffer = new ByteArrayOutputStream();
             InputStream in = client.getInputStream();
@@ -61,6 +77,10 @@ public class NetworkManager {
     }
 
     public void sendMessage(String address, int port, String jsonMessage) {
+        /**
+         * Opens a temporary socket to a target peer, sends the given JSON message,
+         * and closes the socket immediately after.
+         */
         try (Socket socket = new Socket(address, port)) {
             byte[] data = (jsonMessage + "\n").getBytes("UTF-8");
             socket.getOutputStream().write(data);
@@ -72,6 +92,11 @@ public class NetworkManager {
     }
 
     public void connectToPeer(String address, int port, String peerName) {
+        /**
+         * Initiates the handshake process with a new peer
+         * Generates a new ephemeral key pair, signs it with the long-term identity key,
+         * sends out HANDSHAKE_INIT message, to start the secure session process
+         */
         try {
             SessionManager session = new SessionManager();
             pendingSessions.put(peerName, session);
@@ -80,6 +105,7 @@ public class NetworkManager {
             byte[] mySignature    = identity.sign(myEphemeralRaw);
             byte[] myIdentityPub  = identity.getPublicKeyBytes();
 
+            //Construct the initial greeting with the identity and ephemeral keys, and a signature to prove ownership of the identity key
             String initMsg = "{\"type\":\"HANDSHAKE_INIT\"," +
                              "\"sender\":\"" + myName + "\"," +
                              "\"payload\":{" +
@@ -99,6 +125,11 @@ public class NetworkManager {
     }
 
     public void broadcastPeerLeft(String senderId, Map<String, String[]> peers) {
+        /**
+         * Notifies everyone in the peer list, regardless of session state,
+         * that a peer has left the network so they can clean up any of their
+         * own session states.
+         */
         String msg = "{\"type\":\"PEER_LEFT\",\"sender\":\"" + senderId + "\",\"payload\":{}}";
         System.out.println("[NETWORK] Broadcasting exit to " + peers.size() + " peers...");
         for (String[] info : peers.values()) {
