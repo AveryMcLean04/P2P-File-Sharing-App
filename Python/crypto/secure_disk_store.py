@@ -1,16 +1,13 @@
 import os
 from pathlib import Path
-from typing import List
+from typing import List, Dict, Optional
 from crypto.encryption import FileEncryptor
 
 class SecureDiskStore:
     """
-    Manages the local filesystem for the application. 
-    Handles two primary zones:
-    1. Vault: Encrypted storage for private files.
-    2. Shared: Plaintext storage for files currently being served to peers.
+    Manages encrypted vault storage and plaintext shared storage.
+    Updated to support file integrity hashing for peer-to-peer verification.
     """
-    
     def __init__(self, vault_dir: str, shared_dir: str, encryptor: FileEncryptor, app):
         self.app = app
         self.vault_dir = Path(vault_dir)
@@ -23,43 +20,28 @@ class SecureDiskStore:
     # --- Vault Logic ---
 
     def list_encrypted_files(self) -> List[str]:
-        """Returns a list of filenames currently secured within the vault."""
+        """Returns filenames currently secured in the vault."""
         return [f.name.replace(".enc", "") for f in self.vault_dir.glob("*.enc")]
 
     def save_to_vault(self, filename: str, content: bytes) -> bool:
-        """
-        Encrypts and saves raw content into the vault. 
-        Automatically appends the .enc suffix if not present.
-        """
+        """Encrypts and saves content into the vault with a .enc suffix."""
         try:
-            p = Path(filename)
-            clean_name = p.stem if p.suffix == ".enc" else p.name
+            clean_name = Path(filename).stem if filename.endswith(".enc") else filename
             file_path = self.vault_dir / f"{clean_name}.enc"
-            
-            encrypted_data = self.encryptor.encrypt(content)
-            file_path.write_bytes(encrypted_data)
-            
+            file_path.write_bytes(self.encryptor.encrypt(content))
             return True
         except Exception as e:
             self.app.log("error", f"Vault write failed: {e}")
             return False
 
     def load_from_vault(self, filename: str) -> bytes:
-        """
-        Retrieves an encrypted file from the vault, decrypts it, 
-        and returns the original plaintext bytes.
-        """
+        """Decrypts and returns plaintext bytes from a vault file."""
         clean_name = filename[:-4] if filename.endswith(".enc") else filename
         file_path = self.vault_dir / f"{clean_name}.enc"
+        if not file_path.exists(): return b""
         
-        if not file_path.exists(): 
-            self.app.log("error", f"File {file_path} not found in vault.")
-            return b""
-            
         try:
-            encrypted_blob = file_path.read_bytes()
-            decrypted_data = self.encryptor.decrypt(encrypted_blob)
-            return decrypted_data if decrypted_data else b""
+            return self.encryptor.decrypt(file_path.read_bytes()) or b""
         except Exception as e:
             self.app.log("error", f"Vault decryption failed: {e}")
             return b""
@@ -67,102 +49,65 @@ class SecureDiskStore:
     # --- Ingestion & Sharing ---
 
     def ingest_file(self, source_path: str) -> bool:
-        """
-        Secures a local file by:
-        1. Encrypting it into the Vault for long-term storage.
-        2. Placing a plaintext copy in the Shared folder for peer discovery.
-        """
+        """Secures a file in the vault and places a copy in the shared directory."""
         source = Path(source_path)
-        
         if not source.exists():
-            project_root = Path(__file__).resolve().parent.parent.parent
-            source = project_root / source_path
+            source = Path(__file__).resolve().parent.parent.parent / source_path
 
-        if not source.exists():
-            self.app.log("error", f"Ingest failed: Source file '{source_path}' not found.")
-            return False
-
-        if source.is_dir():
-            self.app.log("error", f"Ingest failed: '{source.name}' is a directory.")
+        if not source.exists() or source.is_dir():
+            self.app.log("error", f"Ingest failed: Invalid source '{source_path}'")
             return False
 
         try:
             content = source.read_bytes()
             filename = source.name
             
-            clean_name = filename[:-4] if filename.endswith(".enc") else filename
-            vault_path = self.vault_dir / f"{clean_name}.enc"
-            
-            encrypted_data = self.encryptor.encrypt(content)
-            if not encrypted_data:
-                raise ValueError("Encryption returned empty data.")
-                
-            vault_path.write_bytes(encrypted_data)
-            
-            shared_path = self.shared_dir / filename
-            shared_path.write_bytes(content)
-            
-            if vault_path.exists() and shared_path.exists():
-                self.app.log("security", f"File '{filename}' secured in vault.")
+            # Save encrypted to Vault and plaintext to Shared
+            if self.save_to_vault(filename, content):
+                (self.shared_dir / filename).write_bytes(content)
+                self.app.log("security", f"File '{filename}' ingested and ready for sharing.")
                 return True
-            else:
-                self.app.log("error", "Ingest failed: Files were not written to disk.")
-                return False
-                
+            return False
         except Exception as e:
-            self.app.log("error", f"Ingestion process failed: {e}")
-            if 'vault_path' in locals() and vault_path.exists(): vault_path.unlink()
-            if 'shared_path' in locals() and shared_path.exists(): shared_path.unlink()
+            self.app.log("error", f"Ingestion failed: {e}")
             return False
 
     def uningest_file(self, filename: str) -> bool:
-        """
-        Removes a file from visibility by:
-        1. Deleting it from the Shared folder.
-        2. Deleting it from the Vault.
-        3. Broadcasting a removal notification to all active peers.
-        """
+        """Removes a file from both shared and vault storage."""
         try:
-            shared_path = self.shared_dir / filename
-            if shared_path.exists(): 
-                shared_path.unlink()
-            
+            (self.shared_dir / filename).unlink(missing_ok=True)
             clean_name = filename.replace(".enc", "")
-            vault_path = self.vault_dir / f"{clean_name}.enc"
-            if vault_path.exists(): 
-                vault_path.unlink()
-                
-            self.app.log("security", f"Successfully uningested '{filename}'.")
-
-            if self.app and hasattr(self.app, 'active_sessions'):
-                for peer_id in list(self.app.active_sessions.keys()):
-                    peer = self.app.discovery.peers.get(peer_id)
-                    if peer:
-                        self.app.network.send_message(peer['ip'], peer['port'], {
-                            "type": "FILE_REMOVAL_NOTIFY",
-                            "sender": self.app.user_id,
-                            "payload": {"filename": filename}
-                        })
+            (self.vault_dir / f"{clean_name}.enc").unlink(missing_ok=True)
+            
+            self.app.log("security", f"Uningested '{filename}'.")
             return True
         except Exception as e:
             self.app.log("error", f"Uningestion failed: {e}")
             return False
 
-    def list_shared_files(self) -> List[str]:
-        """Lists filenames currently residing in the vault (available for sharing)."""
-        return [f.name.replace(".enc", "") for f in self.vault_dir.iterdir() if f.is_file()]
+    def list_shared_files(self) -> List[Dict[str, str]]:
+        """
+        Lists shared files with their SHA-256 hashes.
+        Peer B uses these hashes to verify files received from other peers.
+        """
+        shared_list = []
+        for file_path in self.shared_dir.iterdir():
+            if file_path.is_file():
+                content = file_path.read_bytes()
+                shared_list.append({
+                    "filename": file_path.name,
+                    "hash": self.encryptor.get_hash(content)
+                })
+        return shared_list
 
     def get_shared_file_content(self, filename: str) -> bytes:
-        """Reads and returns the plaintext content from the shared directory."""
+        """Returns the plaintext content from the shared directory."""
         file_path = self.shared_dir / filename
         return file_path.read_bytes() if file_path.exists() else b""
 
     def export_from_vault_to_shared(self, filename: str):
-        """
-        Decrypts a file from the vault and places a plaintext copy 
-        in the shared directory to make it available to the network.
-        """
+        """Decrypts a vault file into the shared directory."""
         data = self.load_from_vault(filename)
         if data:
             (self.shared_dir / filename).write_bytes(data)
-            self.app.log("security", f"'{filename}' ready for sharing.")
+            self.app.log("security", f"'{filename}' exported to shared.")

@@ -27,6 +27,7 @@ class AppCLI:
             "migrate":  {"func": self.cmd_migrate,    "desc": "Migrate identity keys (broadcast to peers)"},
             "accept":   {"func": self.cmd_accept,     "desc": "Accept a pending file transfer"},
             "deny":     {"func": self.cmd_deny,       "desc": "Deny a pending file transfer"},
+            "test":     {"func": self.cmd_test,       "desc": "Run system diagnostics and test suite"},
             "exit":     {"func": self.app.shutdown,   "desc": "Safely shut down the application"}
         }
 
@@ -135,11 +136,13 @@ class AppCLI:
 
     def cmd_request(self, *args):
         """Downloads a specific file from a peer."""
-        target = args[0] if args else input("Request from: ").strip()
+        target = args[0] if args else input("Request from (Peer ID): ").strip()
         filename = args[1] if len(args) > 1 else input("Filename: ").strip()
         
-        if target and filename and self._require_session(target):
-            self.app.logic.initiate_file_request(target, filename)
+        if not target or not filename or not self._require_session(target):
+            return
+
+        self.app.logic.initiate_file_request(target, filename)
 
     def cmd_send(self, *args):
         """Proposes to 'push' a file to another peer."""
@@ -167,9 +170,12 @@ class AppCLI:
         filename = args[0] if args else input("Search for filename: ").strip()
         if not filename: return
 
-        active_targets = [t for t in self.app.active_sessions.keys()]
+        active_targets = list(self.app.active_sessions.keys())
         if not active_targets:
             return self.app.log("error", "No active secure sessions to search.")
+
+        if hasattr(self.app.logic, "active_transfers"):
+            self.app.logic.active_transfers[filename] = []
 
         self.app.log("system", f"Searching for '{filename}' across {len(active_targets)} peers...")
         for target in active_targets:
@@ -178,7 +184,7 @@ class AppCLI:
                 self.app.network.send_message(peer['ip'], peer['port'], {
                     "type": "REDUNDANCY_QUERY",
                     "sender": self.app.user_id,
-                    "payload": {"filename": filename, "query_id": os.urandom(4).hex()}
+                    "payload": {"filename": filename}
                 })
 
     # --- Identity & Consent ---
@@ -226,6 +232,21 @@ class AppCLI:
         self.app.pending_transfer = None
         self.app.awaiting_consent = False
         self.app.log("system", "Transfer request denied.")
+
+    def cmd_test(self, *args):
+        """Triggers the external pytest suite."""
+        import subprocess
+        self.app.log("system", "Launching external test suite...")
+        try:
+            # Runs pytest on the tests/ directory
+            result = subprocess.run(["pytest", "tests/"], capture_output=True, text=True)
+            print(result.stdout)
+            if result.returncode == 0:
+                self.app.log("security", "All automated tests passed.")
+            else:
+                self.app.log("error", "Test suite failed. see output above.")
+        except FileNotFoundError:
+            self.app.log("error", "Pytest not found. install with 'pip install pytest'.")
 
     def run_loop(self):
         """Main CLI input loop."""

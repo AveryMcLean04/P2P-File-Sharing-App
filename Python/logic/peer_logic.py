@@ -6,7 +6,7 @@ from typing import Dict, Any
 class PeerLogic:
     """
     Core business logic for P2P interactions.
-    Handles cryptographic handshakes, file transfer consent, and redundancy checks.
+    Handles cryptographic handshakes, file transfers, and identity migration.
     """
     def __init__(self, app):
         self.app = app
@@ -15,7 +15,7 @@ class PeerLogic:
     # --- Authentication & Key Exchange ---
 
     def initiate_handshake(self, target_id: str):
-        """Generates the initial DH exchange payload to send to a peer."""
+        """Generates the initial DH exchange payload for a target peer."""
         try:
             my_id_pub = self.app.auth_manager.get_public_key()
             local_priv, local_pub = self.app.auth_manager.generate_ephemeral_pair()
@@ -44,7 +44,7 @@ class PeerLogic:
             peer_signature = base64.b64decode(payload.get("signature"))
 
             if not self.app.auth_manager.verify_signature(peer_id_pub, peer_signature, peer_ephemeral_pub):
-                self.app.log("security", f"Handshake signature spoofing detected from {sender}!")
+                self.app.log("security", f"Handshake spoofing detected from {sender}!")
                 return
 
             local_priv, local_pub = self.app.auth_manager.generate_ephemeral_pair()
@@ -69,19 +69,16 @@ class PeerLogic:
             }
             
             peer_info = self.app.discovery.peers.get(sender)
-            target_ip = peer_info['ip'] if peer_info else addr[0]
-            target_port = peer_info['port'] if peer_info else addr[1]
-
-            self.app.network.send_message(target_ip, target_port, response)
+            t_ip, t_port = (peer_info['ip'], peer_info['port']) if peer_info else addr
+            self.app.network.send_message(t_ip, t_port, response)
             self.app.log("security", f"Secure session established with {sender}.")
-            
             print(f"\r\033[K{self.app.user_id} > ", end="", flush=True)
 
         except Exception as e:
             self.app.log("error", f"Handshake Init Failed: {e}")
 
     def process_handshake_response(self, sender: str, payload: dict):
-        """Completes the handshake initiated by us."""
+        """Completes the handshake initiated by this node."""
         try:
             peer_ephemeral_pub = base64.b64decode(payload.get("ephemeral_key"))
             peer_signature = base64.b64decode(payload.get("signature"))
@@ -92,21 +89,17 @@ class PeerLogic:
                 return
 
             local_priv = self.app.auth_manager.pending_handshakes.get(sender)
-            if not local_priv:
-                self.app.log("error", f"No pending handshake found for {sender}.")
-                return
+            if not local_priv: return
 
             session_key = self.app.auth_manager.derive_shared_secret(peer_ephemeral_pub, local_priv)
-            encryptor = self.app.auth_manager.create_encryptor(session_key)
-
             self.app.active_sessions[sender] = {
                 "status": "SECURE-SESSION",
-                "encryptor": encryptor,
+                "encryptor": self.app.auth_manager.create_encryptor(session_key),
                 "peer_identity": peer_id_pub
             }
         
             del self.app.auth_manager.pending_handshakes[sender]
-            self.app.log("security", f"Mutual trust established. {sender} is now SECURE.")
+            self.app.log("security", f"Mutual trust established with {sender}.")
             print(f"\r\033[K{self.app.user_id} > ", end="", flush=True)
         except Exception as e:
             self.app.log("error", f"Handshake Response Failed: {e}")
@@ -117,16 +110,14 @@ class PeerLogic:
         """Decrypts and displays an incoming text message."""
         session = self.app.active_sessions.get(sender)
         if not session: return
-
         try:
             decrypted = session["encryptor"].decrypt(base64.b64decode(payload))
             print(f"\r\033[K[CHAT] {sender}: {decrypted.decode('utf-8')}")
             print(f"{self.app.user_id} > ", end="", flush=True)
-        except Exception:
-            self.app.log("error", f"Failed to decrypt message from {sender}.")
+        except: self.app.log("error", f"Decryption failed from {sender}.")
 
     def request_file_list(self, target_id: str):
-        """Asks a peer for their shared catalog."""
+        """Requests the shared file catalog from a specific peer."""
         peer = self.app.discovery.peers.get(target_id)
         if peer:
             self.app.network.send_message(peer['ip'], peer['port'], {
@@ -135,72 +126,56 @@ class PeerLogic:
             self.app.log("system", f"Syncing catalog with {target_id}...")
 
     def handle_list_request(self, sender: str, payload: dict = None):
-        """Sends our catalog to a requesting peer."""
+        """Sends our local catalog to a requesting peer."""
         files = self.app.disk_store.list_encrypted_files() 
         peer = self.app.discovery.peers.get(sender)
         if peer:
             self.app.network.send_message(peer['ip'], peer['port'], {
-                "type": "FILE_LIST_RESPONSE", 
-                "sender": self.app.user_id, 
-                "payload": {"files": files}
+                "type": "FILE_LIST_RESPONSE", "sender": self.app.user_id, "payload": {"files": files}
             })
 
     def process_file_list_response(self, sender: str, payload: dict):
-        """Displays the catalog received from a peer."""
+        """Displays the file list received from a peer."""
         files = payload.get("files", [])
         print(f"\r\033[K[CATALOG] Peer '{sender}' offers {len(files)} files:")
-        if not files:
-            print("  > (Empty)")
-        for f in files: 
-            print(f"  > {f}")
+        for f in files: print(f"  > {f}")
         print(f"{self.app.user_id} > ", end="", flush=True)
 
     # --- Transfer Consent Logic ---
 
     def initiate_file_request(self, target_id: str, filename: str):
-        """Standard 'Pull' request for a file."""
+        """Sends a formal request to download a file from a peer."""
         peer = self.app.discovery.peers.get(target_id)
         if peer:
             self.app.network.send_message(peer['ip'], peer['port'], {
-                "type": "TRANSFER_REQUEST",
-                "sender": self.app.user_id,
-                "payload": {"filename": filename}
+                "type": "TRANSFER_REQUEST", "sender": self.app.user_id, "payload": {"filename": filename}
             })
-            self.app.log("transfer", f"Requested '{filename}' from {target_id}. Waiting for peer...")
+            self.app.log("transfer", f"Requested '{filename}' from {target_id}.")
 
     def handle_push_proposal(self, sender: str, payload: dict):
-        """Triggered when someone wants to 'Send' a file to us."""
+        """Handles an incoming offer from a peer wanting to send a file."""
         filename = payload.get("filename")
         self.app.pending_transfer = {"sender": sender, "filename": filename, "type": "PUSH"}
         self.app.awaiting_consent = True
-        
-        print(f"\r\033[K\n\a[!PROPOSAL] {sender} wants to SEND you: {filename}")
-        print("Action required: Type 'accept' or 'deny'")
-        print(f"{self.app.user_id} > ", end="", flush=True)
+        print(f"\r\033[K\n\a[!PROPOSAL] {sender} wants to SEND: {filename}")
+        print(f"Action: 'accept' or 'deny'\n{self.app.user_id} > ", end="", flush=True)
 
     def handle_transfer_request(self, sender: str, payload: dict):
-        """Triggered when someone wants to 'Download' a file from us."""
+        """Handles an incoming request from a peer wanting to download a file."""
         filename = payload.get("filename")
-        
         if getattr(self.app, "last_pushed_file", None) == filename:
-            self.app.log("transfer", f"Auto-approving download of '{filename}' for {sender}.")
             self.execute_approved_transfer(sender, filename)
             self.app.last_pushed_file = None
             return
-
         self.app.pending_transfer = {"sender": sender, "filename": filename, "type": "PULL"}
         self.app.awaiting_consent = True
         print(f"\r\033[K\n\a[!REQUEST] {sender} wants to DOWNLOAD: {filename}")
-        print("Action required: Type 'accept' or 'deny'")
-        print(f"{self.app.user_id} > ", end="", flush=True)
+        print(f"Action: 'accept' or 'deny'\n{self.app.user_id} > ", end="", flush=True)
 
     def execute_approved_transfer(self, sender: str, filename: str):
-        """Encrypts and transmits the file after user consent."""
+        """Transmits the requested file to the peer after consent."""
         session = self.app.active_sessions.get(sender)
-        if not session:
-            self.app.log("error", f"Transfer aborted: No secure session with {sender}.")
-            return
-
+        if not session: return
         try:
             if filename not in self.app.disk_store.list_shared_files():
                 self.app.disk_store.export_from_vault_to_shared(filename)
@@ -208,124 +183,118 @@ class PeerLogic:
             file_data = self.app.disk_store.get_shared_file_content(filename)
             file_hash = hashlib.sha256(file_data).hexdigest()
             signature = self.app.auth_manager.sign(file_hash.encode())
-
             encrypted_file = session["encryptor"].encrypt(file_data)
-            peer = self.app.discovery.peers.get(sender)
             
+            peer = self.app.discovery.peers.get(sender)
             if peer:
                 self.app.network.send_message(peer['ip'], peer['port'], {
-                    "type": "TRANSFER_ACCEPT", 
-                    "sender": self.app.user_id,
+                    "type": "TRANSFER_ACCEPT", "sender": self.app.user_id,
                     "payload": {
-                        "filename": filename,
+                        "filename": filename, "sha256": file_hash,
                         "data": base64.b64encode(encrypted_file).decode(),
-                        "sha256": file_hash,
                         "signature": base64.b64encode(signature).decode()
                     }
                 })
-                self.app.log("transfer", f"Transfer complete: '{filename}' sent to {sender}.")
-        except Exception as e:
-            self.app.log("error", f"Transfer execution failed: {e}")
+                self.app.log("transfer", f"Sent '{filename}' to {sender}.")
+        except Exception as e: self.app.log("error", f"Transfer failed: {e}")
 
     def handle_transfer_accept(self, sender: str, payload: dict):
-        """Receives, verifies, and secures an incoming file."""
+        """Verifies, decrypts, and saves an incoming file."""
         session = self.app.active_sessions.get(sender)
         if not session: return
-
-        filename = payload.get("filename")
         try:
-            peer_pub_key = session["peer_identity"]
             sig = base64.b64decode(payload.get("signature"))
             received_hash = payload.get("sha256")
-            
-            if not self.app.auth_manager.verify_signature(peer_pub_key, sig, received_hash.encode()):
-                self.app.log("security", f"CRITICAL: Identity signature mismatch on {filename}!")
+            if not self.app.auth_manager.verify_signature(session["peer_identity"], sig, received_hash.encode()):
+                self.app.log("security", "Signature mismatch on received file!")
                 return
 
-            encrypted_blob = base64.b64decode(payload.get("data"))
-            decrypted_data = session["encryptor"].decrypt(encrypted_blob)
-            
-            if hashlib.sha256(decrypted_data).hexdigest() != received_hash:
-                self.app.log("security", f"INTEGRITY ALERT: Hash mismatch for {filename}!")
+            decrypted = session["encryptor"].decrypt(base64.b64decode(payload.get("data")))
+            if hashlib.sha256(decrypted).hexdigest() != received_hash:
+                self.app.log("security", "Integrity hash mismatch!")
                 return
 
-            if self.app.disk_store.save_to_vault(filename, decrypted_data):
-                self.app.log("file", f"Securely received and stored: {filename}")
-        except Exception as e:
-            self.app.log("error", f"Transfer intake failed: {e}")
-        
+            if self.app.disk_store.save_to_vault(payload.get("filename"), decrypted):
+                self.app.log("file", f"Received and stored: {payload.get('filename')}")
+        except Exception as e: self.app.log("error", f"Intake failed: {e}")
         print(f"{self.app.user_id} > ", end="", flush=True)
 
     # --- Redundancy & Maintenance ---
 
     def handle_redundancy_query(self, sender: str, payload: dict):
-        """Responds if we hold a requested file for network redundancy."""
+        """Offers a file if we have it to maintain network redundancy."""
         filename = payload.get("filename")
         if filename in self.app.disk_store.list_encrypted_files():
             peer = self.app.discovery.peers.get(sender)
             if peer:
                 self.app.network.send_message(peer['ip'], peer['port'], {
-                    "type": "REDUNDANCY_OFFER",
-                    "sender": self.app.user_id,
-                    "payload": {"filename": filename}
+                    "type": "REDUNDANCY_OFFER", "sender": self.app.user_id, "payload": {"filename": filename}
                 })
 
+    def handle_redundancy_offer(self, sender: str, payload: dict):
+        """
+        Processes a response from a peer who has the file we are searching for.
+        Tracks which peers can provide redundancy for specific files.
+        """
+        filename = payload.get("filename")
+        if not filename: return
+
+        if filename not in self.active_transfers:
+            self.active_transfers[filename] = []
+        
+        if sender not in self.active_transfers[filename]:
+            self.active_transfers[filename].append(sender)
+            self.app.log("system", f"Redundancy Match: Peer '{sender}' has a copy of '{filename}'.")
+            
+        print(f"\r\033[K[FOUND] '{filename}' is available on: {', '.join(self.active_transfers[filename])}")
+        print(f"{self.app.user_id} > ", end="", flush=True)
+
     def initiate_key_migration(self):
-        # Delegate to rotate_identity which uses the correct AuthManager API
-        # and the field names Java expects ("new_identity_key" / "signature")
+        """Helper to trigger identity rotation."""
         self.rotate_identity()
 
     def process_key_migration(self, sender, payload):
-        """
-        Processes an incoming identity rotation from a peer.
-        Verifies the Proof of Continuity (new key signed by old key).
-        """
+        """Verifies and updates a peer's identity after they rotate keys."""
         try:
-            new_key_bytes = base64.b64decode(payload.get("new_identity_key"))
-            signature = base64.b64decode(payload.get("signature"))
-            
-            # 1. Get the OLD public key we have stored for this peer
+            new_key = base64.b64decode(payload.get("new_identity_key"))
+            sig = base64.b64decode(payload.get("signature"))
             session = self.app.active_sessions.get(sender)
-            if not session:
-                self.app.log("security", f"Migration from {sender} ignored: No active session.")
-                return
-            
-            old_pub_key = session["peer_identity"]
-
-            # 2. Verify: Did the OLD key sign the NEW key?
-            if self.app.auth_manager.verify_signature(old_pub_key, signature, new_key_bytes):
-                # 3. Update the session with the new identity
-                session["peer_identity"] = new_key_bytes
-                # Also update discovery so future handshakes use the new key
+            if session and self.app.auth_manager.verify_signature(session["peer_identity"], sig, new_key):
+                session["peer_identity"] = new_key
                 if sender in self.app.discovery.peers:
-                    self.app.discovery.peers[sender]["public_key"] = base64.b64encode(new_key_bytes).decode()
-                
-                self.app.log("security", f"KEY MIGRATION SUCCESS: {sender} has updated their identity.")
+                    self.app.discovery.peers[sender]["public_key"] = base64.b64encode(new_key).decode()
+                self.app.log("security", f"Identity updated for {sender}.")
             else:
-                self.app.log("security", f"CRITICAL: Forged migration attempt from {sender}!")
+                self.app.log("security", f"Forged migration from {sender}!")
                 self.app.active_sessions.pop(sender, None)
-        except Exception as e:
-            self.app.log("error", f"Migration processing failed: {e}")
-    
-    def rotate_identity(self):
-        try:
-            # 1. Generate new keys and proof-of-continuity signature
-            old_pub, new_pub, sig = self.app.auth_manager.migrate_identity()
+        except Exception as e: self.app.log("error", f"Migration failed: {e}")
 
-            # 2. Build message as a dict so json.dumps handles encoding cleanly
+    def rotate_identity(self):
+        """Generates new keys and broadcasts proof-of-continuity to peers."""
+        try:
+            _, new_pub, sig = self.app.auth_manager.migrate_identity()
             message = {
-                "type": "KEY_MIGRATION_NOTIFY",
-                "sender": self.app.user_id,
+                "type": "KEY_MIGRATION_NOTIFY", "sender": self.app.user_id,
                 "payload": {
                     "new_identity_key": base64.b64encode(new_pub).decode(),
                     "signature": base64.b64encode(sig).decode()
                 }
             }
+            for peer_id, info in self.app.discovery.peers.items():
+                self.app.network.send_message(info['ip'], info['port'], message)
+            self.app.log("security", "Identity rotated and broadcasted.")
+        except Exception as e: self.app.log("error", f"Rotation failed: {e}")
 
-            # 3. Broadcast to all active peers
-            for peer_id, peer_info in self.app.discovery.peers.items():
-                self.app.network.send_message(peer_info['ip'], peer_info['port'], message)
+    # --- Lifecycle ---
 
-            self.app.log("security", "New identity generated and broadcasted to active sessions.")
-        except Exception as e:
-            self.app.log("error", f"Migration broadcast failed: {e}")
+    def handle_peer_left(self, sender: str, payload: dict = None):
+        """Cleans up sessions and discovery data when a peer disconnects."""
+        try:
+            self.app.active_sessions.pop(sender, None)
+            if getattr(self.app, "pending_transfer", None) and self.app.pending_transfer.get("sender") == sender:
+                self.app.pending_transfer = None
+                self.app.awaiting_consent = False
+            self.app.discovery.peers.pop(sender, None)
+            self.app.log("system", f"Cleaned up peer: {sender}")
+            print(f"\r\033[K{self.app.user_id} > ", end="", flush=True)
+        except Exception as e: self.app.log("error", f"Cleanup error for {sender}: {e}")

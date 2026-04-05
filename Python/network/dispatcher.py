@@ -15,9 +15,6 @@ class MessageDispatcher:
     def __init__(self, app, logic):
         """
         Initializes the dispatcher with application context and business logic.
-        
-        :param app: The main SecureP2PApp instance.
-        :param logic: The PeerLogic instance where protocol handling is defined.
         """
         self.app = app
         self.logic = logic
@@ -25,9 +22,6 @@ class MessageDispatcher:
     def handle(self, message: Dict[str, Any], addr: tuple) -> None:
         """
         Parses an incoming message dictionary and routes it to the correct handler.
-        
-        :param message: The deserialized JSON message.
-        :param addr: The (IP, Port) tuple of the sender.
         """
         m_type = message.get("type")
         sender = message.get("sender")

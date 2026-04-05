@@ -1,62 +1,58 @@
 import pytest
-from unittest.mock import MagicMock, patch
-from pathlib import Path
+from unittest.mock import patch, MagicMock
 
-# --- SUCCESS CASES ---
+# --- Login Tests ---
 
-def test_app_initialization_success(mock_app):
-    """SUCCESS: Verify the app initializes all components and sets core state."""
-    assert mock_app.user_id == "TestUser"
-    assert mock_app.config.port == 5005
-    assert mock_app.active_sessions == {}
-    assert hasattr(mock_app, 'logic'), "App should hold a reference to PeerLogic"
-
-def test_app_directory_setup_success(mock_app):
-    """SUCCESS: Verify app correctly receives its storage paths from Config."""
-    data, shared, vault = mock_app.config.initialize_directories(mock_app.base_path)
+def test_login_success(mock_app):
+    """Test that valid credentials trigger post-login initialization."""
+    mock_app.disk_store = None 
     
-    assert data is not None
-    assert "data" in str(data)
-    assert "shared" in str(shared)
-    assert "vault" in str(vault)
-
-def test_app_consent_state_management(mock_app):
-    """SUCCESS: Verify the app can transition into and out of 'Awaiting Consent' state."""
-    mock_app.awaiting_consent = True
-    mock_app.pending_transfer = {"filename": "test.txt", "type": "PUSH"}
-    assert mock_app.awaiting_consent is True
-    
-    mock_app.awaiting_consent = False
-    mock_app.pending_transfer = None
-    assert mock_app.pending_transfer is None
-
-# --- FAILURE CASES ---
-
-def test_app_initialization_failure_missing_config():
-    """FAILURE: Verify app crashes as expected when Config returns None."""
-    import main
-    with patch('main.AppConfig') as MockConfig, \
-         patch('main.MDNSHandler'), \
-         patch('main.NetworkManager'), \
-         patch('main.AppCLI'), \
-         patch('main.AuthManager'):
-         
-        instance = MockConfig.return_value
-        instance.user_id = "FailUser"
-        instance.port = 9999
-        instance.initialize_directories.return_value = (None, None, None)
+    with patch("getpass.getpass", return_value="correct_password"):
+        mock_app.config.password = "correct_password"
         
-        with pytest.raises(TypeError):
-            main.SecureP2PApp(user_id="FailUser", port=9999)
+        result = mock_app.login()
+        
+        assert result is True
+        mock_app.auth_manager.unlock_vault.assert_called_once_with("correct_password")
 
-def test_app_invalid_session_access_failure(mock_app):
-    """FAILURE: Verify app handles requests for non-existent sessions gracefully."""
-    target = "UnknownPeer"
-    session = mock_app.active_sessions.get(target)
-    assert session is None
+        assert mock_app.discovery.start_discovery.called
 
-def test_app_auth_unlock_failure(mock_app):
-    """FAILURE: Verify app state when the vault fails to unlock."""
-    mock_app.auth_manager.unlock_vault.return_value = False
-    is_unlocked = mock_app.auth_manager.unlock_vault("wrong_password")
-    assert is_unlocked is False
+def test_login_failure(mock_app):
+    """Test that incorrect credentials prevent app initialization."""
+    with patch("getpass.getpass", return_value="wrong_password"):
+        mock_app.config.password = "correct_password"
+        
+        result = mock_app.login(max_retries=1)
+        
+        assert result is False
+        mock_app.discovery.start_discovery.assert_not_called()
+
+# --- Lifecycle Tests ---
+
+def test_run_starts_services(mock_app):
+    """Verify that run() kicks off the network server and CLI."""
+    with patch.object(mock_app.cli, 'run_loop') as mock_loop:
+        mock_app.run()
+        
+        mock_app.network.start_server.assert_called_once()
+        mock_loop.assert_called_once()
+
+def test_shutdown_cleanup(mock_app):
+    """Verify that shutdown notifies peers and stops network services."""
+    with patch("os._exit"):
+        mock_app.shutdown()
+        
+        mock_app.network.broadcast_peer_left.assert_called_once()
+        mock_app.discovery.stop.assert_called_once()
+        mock_app.network.stop.assert_called_once()
+
+# --- Initialization Logic ---
+
+def test_post_login_init_failure(mock_app):
+    """Test behavior when the identity key is missing during boot."""
+    mock_app.disk_store = None
+    mock_app.auth_manager.get_public_key.return_value = None
+    
+    with patch.object(mock_app, 'shutdown') as mock_shutdown:
+        mock_app.post_login_init()
+        mock_shutdown.assert_called_once()

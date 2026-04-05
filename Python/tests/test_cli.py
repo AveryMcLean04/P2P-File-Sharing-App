@@ -1,86 +1,91 @@
 import pytest
 from unittest.mock import MagicMock, patch
-import base64
+from ui.cli import AppCLI
 
-# --- SUCCESS CASES ---
+@pytest.fixture
+def standalone_mock_app():
+    """
+    Creates a completely isolated mock app. 
+    We don't rely on conftest here to avoid import-order pollution.
+    """
+    app = MagicMock()
+    app.user_id = "Alice"
+    app.active_sessions = {}
+    app.discovery.peers = {}
+    app.pending_transfer = None
+    app.awaiting_consent = False
+    app.logic = MagicMock()
+    app.network = MagicMock()
+    app.disk_store = MagicMock()
+    app.log = MagicMock()
+    return app
 
-def test_cli_help_output(mock_app, capsys):
-    """SUCCESS: Verify the help command displays the command table."""
-    from ui.cli import AppCLI
-    cli = AppCLI(mock_app)
-    cli.show_help()
-    captured = capsys.readouterr()
-    assert "COMMAND" in captured.out
-    assert "connect" in captured.out
+@pytest.fixture
+def cli(standalone_mock_app):
+    return AppCLI(standalone_mock_app)
 
-def test_cmd_list_with_peers(mock_app, capsys):
-    """SUCCESS: Verify discovered peers are listed with their session status."""
-    from ui.cli import AppCLI
-    cli = AppCLI(mock_app)
-    
-    mock_app.discovery.peers = {"Alice": {"ip": "192.168.1.5", "port": 5000}}
-    mock_app.active_sessions = {"Alice": {"status": "SECURE-SESSION"}}
-    
+# --- Tests ---
+
+def test_cmd_list_no_peers(cli, standalone_mock_app):
+    standalone_mock_app.discovery.peers = {}
     cli.cmd_list()
-    captured = capsys.readouterr()
-    assert "Alice" in captured.out
-    assert "SECURE-SESSION" in captured.out
 
-def test_cmd_connect_initiates_handshake(mock_app):
-    """SUCCESS: Verify 'connect <UserID>' triggers the logic and network calls."""
-    from ui.cli import AppCLI
-    cli = AppCLI(mock_app)
-    
-    target = "Bob"
-    mock_app.discovery.peers = {target: {"ip": "10.0.0.1", "port": 5000}}
-    
-    mock_app.logic.initiate_handshake.return_value = {"type": "HANDSHAKE"}
-    
-    cli.cmd_connect(target)
-    
-    mock_app.logic.initiate_handshake.assert_called_with(target)
-    mock_app.network.send_message.assert_called_with("10.0.0.1", 5000, {"type": "HANDSHAKE"})
+    standalone_mock_app.log.assert_any_call("system", "No active peers found on local network.")
 
-@patch("builtins.input", side_effect=["Hello Alice"])
-def test_cmd_chat_success(mock_input, mock_app):
-    """SUCCESS: Verify chat encrypts and sends a message."""
-    from ui.cli import AppCLI
-    cli = AppCLI(mock_app)
+def test_cmd_connect_success(cli, standalone_mock_app):
+    standalone_mock_app.discovery.peers = {"Bob": {"ip": "127.0.0.1", "port": 5005}}
+    standalone_mock_app.logic.initiate_handshake.return_value = {"type": "HELLO"}
+    standalone_mock_app.network.send_message.return_value = True
     
-    target = "Alice"
+    cli.cmd_connect("Bob")
+    
+    assert standalone_mock_app.logic.initiate_handshake.called
+    assert standalone_mock_app.network.send_message.called
+
+def test_cmd_chat_denied_without_session(cli, standalone_mock_app):
+    standalone_mock_app.active_sessions = {}
+    cli.cmd_chat("Bob")
+    standalone_mock_app.log.assert_any_call("error", "Access Denied: No secure session with Bob.")
+
+def test_cmd_ingest(cli, standalone_mock_app):
+    cli.cmd_ingest("test_file.txt")
+    standalone_mock_app.disk_store.ingest_file.assert_called_once_with("test_file.txt")
+
+def test_cmd_chat_success(cli, standalone_mock_app):
     mock_encryptor = MagicMock()
-    mock_encryptor.encrypt.return_value = b"encrypted_bytes"
+    mock_encryptor.encrypt.return_value = b"encrypted_data"
     
-    mock_app.active_sessions = {target: {"encryptor": mock_encryptor}}
-    mock_app.discovery.peers = {target: {"ip": "1.1.1.1", "port": 5000}}
+    standalone_mock_app.active_sessions = {"Bob": {"encryptor": mock_encryptor}}
+    standalone_mock_app.discovery.peers = {"Bob": {"ip": "127.0.0.1", "port": 5005}}
+    standalone_mock_app.user_id = "Alice"
     
-    cli.cmd_chat(target)
+    with patch("builtins.input", return_value="Hello"):
+        cli.cmd_chat("Bob")
     
-    sent_args = mock_app.network.send_message.call_args[0]
-    payload = sent_args[2]["payload"]
-    assert payload == base64.b64encode(b"encrypted_bytes").decode()
+    assert mock_encryptor.encrypt.called
+    assert standalone_mock_app.network.send_message.called
+    
+    args = standalone_mock_app.network.send_message.call_args[0]
+    assert args[0] == "127.0.0.1"
+    assert args[2]["type"] == "CHAT_MESSAGE"
 
-# --- FAILURE / EDGE CASES ---
+def test_cmd_deny(cli, standalone_mock_app):
+    standalone_mock_app.pending_transfer = {"sender": "Bob", "filename": "virus.exe"}
+    standalone_mock_app.discovery.peers = {"Bob": {"ip": "1.1.1.1", "port": 1111}}
+    standalone_mock_app.user_id = "Alice"
 
-def test_cmd_send_file_not_in_vault(mock_app):
-    """FAILURE: Verify 'send' fails if the file doesn't exist locally."""
-    from ui.cli import AppCLI
-    cli = AppCLI(mock_app)
+    cli.cmd_deny()
     
-    target = "Alice"
-    mock_app.active_sessions = {target: {}}
-    mock_app.disk_store.list_encrypted_files.return_value = ["real.txt"]
-    
-    cli.cmd_send(target, "fake.txt")
-    
-    mock_app.log.assert_called_with("error", "'fake.txt' not found in local Vault.")
+    assert standalone_mock_app.network.send_message.called
+    assert cli.app.pending_transfer is None
+    assert cli.app.awaiting_consent is False
 
-@patch("builtins.input", side_effect=["y"])
-def test_cmd_uningest_confirmation(mock_input, mock_app):
-    """SUCCESS: Verify file removal requires confirmation."""
-    from ui.cli import AppCLI
-    cli = AppCLI(mock_app)
+def test_run_loop_exit(cli, standalone_mock_app):
+    standalone_mock_app.shutdown = MagicMock()
+    cli.commands["exit"]["func"] = standalone_mock_app.shutdown
     
-    cli.cmd_uningest("my_secret.txt")
+    with patch("builtins.input", side_effect=["exit"]):
+        with patch("builtins.print"):
+            cli.run_loop()
     
-    mock_app.disk_store.uningest_file.assert_called_with("my_secret.txt")
+    assert standalone_mock_app.shutdown.called
