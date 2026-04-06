@@ -111,3 +111,29 @@ class SecureDiskStore:
         if data:
             (self.shared_dir / filename).write_bytes(data)
             self.app.log("security", f"'{filename}' exported to shared.")
+
+    def decrypt_to_system(self, filename: str, destination_path: str) -> bool:
+        """
+        Decrypts a file from the vault and saves the plaintext to a specified path.
+        """
+        try:
+            plaintext_content = self.load_from_vault(filename)
+            
+            if not plaintext_content:
+                self.app.log("error", f"Decryption failed: '{filename}' not found or empty.")
+                return False
+
+            output_path = Path(destination_path)
+            
+            if output_path.is_dir():
+                clean_name = filename.replace(".enc", "")
+                output_path = output_path / clean_name
+
+            output_path.write_bytes(plaintext_content)
+            
+            self.app.log("security", f"Successfully decrypted '{filename}' to {output_path}")
+            return True
+
+        except Exception as e:
+            self.app.log("error", f"Manual decryption failed: {e}")
+            return False

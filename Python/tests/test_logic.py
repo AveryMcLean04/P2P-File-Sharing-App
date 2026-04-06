@@ -1,8 +1,7 @@
 import pytest
 import base64
-import json
-from unittest.mock import MagicMock, patch, ANY
-from logic.peer_logic import PeerLogic
+from unittest.mock import MagicMock, ANY
+from src.logic.peer_logic import PeerLogic
 
 @pytest.fixture
 def mock_app():
@@ -11,18 +10,19 @@ def mock_app():
     app.active_sessions = {}
     app.discovery.peers = {}
     app.auth_manager.pending_handshakes = {}
+    
     app.disk_store.list_encrypted_files.return_value = ["file1.txt"]
     app.disk_store.list_shared_files.return_value = []
+    
+    app.disk_store.decrypt_to_system.side_effect = lambda f, d: f == "file1.txt"
+    
     return app
 
 @pytest.fixture
 def logic(mock_app):
     return PeerLogic(mock_app)
 
-# --- Handshake Tests ---
-
 def test_initiate_handshake_success(logic, mock_app):
-    """Success: Ensure handshake payload contains encoded keys and signature."""
     mock_app.auth_manager.get_public_key.return_value = b"pub_id"
     mock_app.auth_manager.generate_ephemeral_pair.return_value = ("priv_eph", b"pub_eph")
     mock_app.auth_manager.sign.return_value = b"sig"
@@ -36,8 +36,7 @@ def test_initiate_handshake_success(logic, mock_app):
     assert base64.b64decode(payload["ephemeral_share"]) == b"pub_eph"
     assert mock_app.auth_manager.pending_handshakes["Bob"] == "priv_eph"
 
-def test_process_handshake_init_spoof_detection(logic, mock_app):
-    """Fail: Block session if signature verification fails (Spoofing)."""
+def test_process_handshake_init_fail(logic, mock_app):
     mock_app.auth_manager.verify_signature.return_value = False
     
     payload = {
@@ -51,10 +50,7 @@ def test_process_handshake_init_spoof_detection(logic, mock_app):
     assert "Malory" not in mock_app.active_sessions
     mock_app.log.assert_called_with("security", ANY)
 
-# --- File Transfer Tests ---
-
 def test_execute_approved_transfer_success(logic, mock_app):
-    """Success: Encrypt and send a file with a valid hash and signature."""
     sender = "Bob"
     filename = "test.txt"
     mock_app.active_sessions[sender] = {"encryptor": MagicMock()}
@@ -66,42 +62,44 @@ def test_execute_approved_transfer_success(logic, mock_app):
     logic.execute_approved_transfer(sender, filename)
 
     mock_app.network.send_message.assert_called_once()
-    args = mock_app.network.send_message.call_args[0]
-    packet = args[2]
+    packet = mock_app.network.send_message.call_args[0][2]
     
     assert packet["type"] == "TRANSFER_ACCEPT"
     assert packet["payload"]["filename"] == filename
     assert base64.b64decode(packet["payload"]["data"]) == b"enc_data"
     assert base64.b64decode(packet["payload"]["signature"]) == b"file_sig"
 
-def test_handle_transfer_accept_integrity_fail(logic, mock_app):
-    """Fail: Reject incoming file if SHA-256 hash does not match."""
+def test_handle_transfer_accept_fail(logic, mock_app):
     sender = "Bob"
-    session_mock = {
-        "peer_identity": b"bob_pub",
-        "encryptor": MagicMock()
-    }
+    session_mock = {"peer_identity": b"bob_pub", "encryptor": MagicMock()}
     mock_app.active_sessions[sender] = session_mock
     mock_app.auth_manager.verify_signature.return_value = True
     
-    session_mock["encryptor"].decrypt.return_value = b"wrong data"
+    session_mock["encryptor"].decrypt.return_value = b"tampered data"
+    mock_app.disk_store.encryptor.get_hash.return_value = "actual_hash_123"
     
     payload = {
         "filename": "virus.exe",
-        "sha256": "correct_hash_expected",
+        "sha256": "expected_hash_456",
         "data": base64.b64encode(b"some_data").decode(),
         "signature": base64.b64encode(b"sig").decode()
     }
 
     logic.handle_transfer_accept(sender, payload)
 
-    mock_app.log.assert_any_call("security", "Integrity hash mismatch!")
+    found = any("Integrity hash mismatch" in call.args[1] for call in mock_app.log.call_args_list if call.args[0] == "security")
+    assert found
     mock_app.disk_store.save_to_vault.assert_not_called()
 
-# --- Identity Rotation Tests ---
+def test_manual_decryption_gate_success(logic, mock_app):
+    result = mock_app.disk_store.decrypt_to_system("file1.txt", "/tmp/out")
+    assert result is True
 
-def test_rotate_identity_broadcast(logic, mock_app):
-    """Success: Rotate keys and notify all known peers."""
+def test_manual_decryption_gate_fail(logic, mock_app):
+    result = mock_app.disk_store.decrypt_to_system("missing.txt", "/tmp/out")
+    assert result is False
+
+def test_rotate_identity_success(logic, mock_app):
     mock_app.discovery.peers = {
         "Bob": {"ip": "1.1.1.1", "port": 5005},
         "Charlie": {"ip": "2.2.2.2", "port": 5005}
@@ -113,8 +111,7 @@ def test_rotate_identity_broadcast(logic, mock_app):
     assert mock_app.network.send_message.call_count == 2
     mock_app.log.assert_any_call("security", "Identity rotated and broadcasted.")
 
-def test_process_key_migration_forgery(logic, mock_app):
-    """Fail: Pop active session if key migration signature is forged."""
+def test_process_key_migration_fail(logic, mock_app):
     sender = "Bob"
     mock_app.active_sessions[sender] = {"peer_identity": b"old_key"}
     mock_app.auth_manager.verify_signature.return_value = False
@@ -129,10 +126,7 @@ def test_process_key_migration_forgery(logic, mock_app):
     assert sender not in mock_app.active_sessions
     mock_app.log.assert_any_call("security", f"Forged migration from {sender}!")
 
-# --- Lifecycle Tests ---
-
-def test_handle_peer_left_cleanup(logic, mock_app):
-    """Success: Clean up sessions and pending transfers when peer leaves."""
+def test_handle_peer_left_success(logic, mock_app):
     sender = "Bob"
     mock_app.active_sessions[sender] = {}
     mock_app.discovery.peers[sender] = {}

@@ -20,6 +20,7 @@ class AppCLI:
             "vault":    {"func": self.cmd_vault,      "desc": "List locally secured files"},
             "ingest":   {"func": self.cmd_ingest,     "desc": "Encrypt a local file into Vault <path>"},
             "uningest": {"func": self.cmd_uningest,   "desc": "Remove a file from Vault <filename>"},
+            "decrypt": {"func": self.cmd_decrypt, "desc": "Decrypt a vault file to a local path <filename> <dest_path>"},
             "fetch":    {"func": self.cmd_fetch,      "desc": "Request a list of shared files <UserID>"},
             "request":  {"func": self.cmd_request,    "desc": "Download a file from a peer <UserID> <filename>"},
             "send":     {"func": self.cmd_send,       "desc": "Propose a file transfer <UserID> <filename>"},
@@ -125,6 +126,14 @@ class AppCLI:
             confirm = input(f"Confirm deletion of '{filename}'? (y/n): ").lower()
             if confirm == 'y':
                 self.app.disk_store.uningest_file(filename)
+
+    def cmd_decrypt(self, *args):
+        """CLI wrapper to decrypt a file back to the host system."""
+        filename = args[0] if args else input("Filename in vault: ").strip()
+        dest = args[1] if len(args) > 1 else input("Destination path (e.g. ./Downloads): ").strip()
+
+        if filename and dest:
+            self.app.disk_store.decrypt_to_system(filename, dest)
 
     # --- File Sharing & Redundancy ---
 
@@ -238,7 +247,6 @@ class AppCLI:
         import subprocess
         self.app.log("system", "Launching external test suite...")
         try:
-            # Runs pytest on the tests/ directory
             result = subprocess.run(["pytest", "tests/"], capture_output=True, text=True)
             print(result.stdout)
             if result.returncode == 0:
@@ -246,7 +254,7 @@ class AppCLI:
             else:
                 self.app.log("error", "Test suite failed. see output above.")
         except FileNotFoundError:
-            self.app.log("error", "Pytest not found. install with 'pip install pytest'.")
+            self.app.log("error", "Pytest not found.")
 
     def run_loop(self):
         """Main CLI input loop."""

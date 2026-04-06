@@ -2,9 +2,9 @@ import pytest
 import json
 import socket
 from unittest.mock import MagicMock, patch, ANY
-from network.connection import NetworkManager
-from network.dispatcher import MessageDispatcher
-from network.mdns_handler import MDNSHandler
+from src.network.connection import NetworkManager
+from src.network.dispatcher import MessageDispatcher
+from src.network.mdns_handler import MDNSHandler
 
 @pytest.fixture
 def mock_app():

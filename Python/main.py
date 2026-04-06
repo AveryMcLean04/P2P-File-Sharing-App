@@ -6,14 +6,14 @@ from pathlib import Path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 
 try:
-    from config import AppConfig
-    from authentication.auth_manager import AuthManager
-    from crypto.secure_disk_store import SecureDiskStore
-    from network.mdns_handler import MDNSHandler
-    from network.dispatcher import MessageDispatcher
-    from network.connection import NetworkManager
-    from logic.peer_logic import PeerLogic
-    from ui.cli import AppCLI
+    from src.config import AppConfig
+    from src.authentication.auth_manager import AuthManager
+    from src.crypto.secure_disk_store import SecureDiskStore
+    from src.network.mdns_handler import MDNSHandler
+    from src.network.dispatcher import MessageDispatcher
+    from src.network.connection import NetworkManager
+    from src.logic.peer_logic import PeerLogic
+    from src.ui.cli import AppCLI
 except ImportError as e:
     print(f"[FATAL] Dependency error: {e}")
     sys.exit(1)

@@ -21,13 +21,13 @@ def mock_app(tmp_path):
     import main
 
     # Use a context manager to patch dependencies before instantiation
-    with patch('network.mdns_handler.MDNSHandler'), \
-         patch('network.connection.NetworkManager'), \
-         patch('ui.cli.AppCLI'), \
-         patch('config.AppConfig') as mock_config_cls, \
-         patch('authentication.auth_manager.AuthManager') as mock_auth_cls, \
-         patch('logic.peer_logic.PeerLogic') as mock_logic_cls, \
-         patch('crypto.secure_disk_store.SecureDiskStore') as mock_disk_cls:
+    with patch('src.network.mdns_handler.MDNSHandler'), \
+         patch('src.network.connection.NetworkManager'), \
+         patch('src.ui.cli.AppCLI'), \
+         patch('src.config.AppConfig') as mock_config_cls, \
+         patch('src.authentication.auth_manager.AuthManager') as mock_auth_cls, \
+         patch('src.logic.peer_logic.PeerLogic') as mock_logic_cls, \
+         patch('src.crypto.secure_disk_store.SecureDiskStore') as mock_disk_cls:
         
         # Configure Config Mock
         instance_config = mock_config_cls.return_value

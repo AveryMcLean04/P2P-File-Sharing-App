@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import MagicMock, patch
-from ui.cli import AppCLI
+from src.ui.cli import AppCLI
 
 @pytest.fixture
 def standalone_mock_app():

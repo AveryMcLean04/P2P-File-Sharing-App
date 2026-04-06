@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519, x25519
-from authentication.auth_manager import AuthManager
+from src.authentication.auth_manager import AuthManager
 
 @pytest.fixture
 def auth_mgr(tmp_path):

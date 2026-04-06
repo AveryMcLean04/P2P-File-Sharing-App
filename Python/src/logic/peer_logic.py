@@ -11,6 +11,7 @@ class PeerLogic:
     def __init__(self, app):
         self.app = app
         self.active_transfers: Dict[str, Any] = {}
+        self.metadata_cache = {}
 
     # --- Authentication & Key Exchange ---
 
@@ -135,10 +136,17 @@ class PeerLogic:
             })
 
     def process_file_list_response(self, sender: str, payload: dict):
-        """Displays the file list received from a peer."""
+        """Modified to cache hashes from the original source."""
         files = payload.get("files", [])
+    
         print(f"\r\033[K[CATALOG] Peer '{sender}' offers {len(files)} files:")
-        for f in files: print(f"  > {f}")
+        for f in files:
+            fname = f['filename']
+            fhash = f['hash']
+            # Cache the hash as the 'Source of Truth' for this file
+            self.metadata_cache[fname] = fhash
+            print(f"  > {fname} (SHA256: {fhash[:8]}...)")
+
         print(f"{self.app.user_id} > ", end="", flush=True)
 
     # --- Transfer Consent Logic ---
@@ -199,25 +207,41 @@ class PeerLogic:
         except Exception as e: self.app.log("error", f"Transfer failed: {e}")
 
     def handle_transfer_accept(self, sender: str, payload: dict):
-        """Verifies, decrypts, and saves an incoming file."""
+        """Verifies and decrypts, checking against the cached Source of Truth."""
         session = self.app.active_sessions.get(sender)
         if not session: return
+
         try:
-            sig = base64.b64decode(payload.get("signature"))
+            filename = payload.get("filename")
             received_hash = payload.get("sha256")
+        
+            trusted_hash = self.metadata_cache.get(filename)
+        
+            if trusted_hash and received_hash != trusted_hash:
+                self.app.log("security", f"ALERT: Peer {sender} sent a version of {filename} that differs from the original!")
+                return
+
+            sig = base64.b64decode(payload.get("signature"))
             if not self.app.auth_manager.verify_signature(session["peer_identity"], sig, received_hash.encode()):
-                self.app.log("security", "Signature mismatch on received file!")
+                self.app.log("security", f"Signature mismatch from {sender}!")
                 return
 
             decrypted = session["encryptor"].decrypt(base64.b64decode(payload.get("data")))
-            if hashlib.sha256(decrypted).hexdigest() != received_hash:
-                self.app.log("security", "Integrity hash mismatch!")
+            actual_hash = hashlib.sha256(decrypted).hexdigest()
+
+            if actual_hash != received_hash:
+                self.app.log("security", "Integrity hash mismatch: Data corrupted during transit.")
                 return
 
-            if self.app.disk_store.save_to_vault(payload.get("filename"), decrypted):
-                self.app.log("file", f"Received and stored: {payload.get('filename')}")
-        except Exception as e: self.app.log("error", f"Intake failed: {e}")
-        print(f"{self.app.user_id} > ", end="", flush=True)
+            if trusted_hash and actual_hash != trusted_hash:
+                self.app.log("security", "Critical: Decrypted data does not match original source hash!")
+                return
+
+            if self.app.disk_store.save_to_vault(filename, decrypted):
+                self.app.log("file", f"Succesfully recovered {filename} from redundancy peer {sender}.")
+            
+        except Exception as e:
+            self.app.log("error", f"Redundancy intake failed: {e}")
 
     # --- Redundancy & Maintenance ---
 
