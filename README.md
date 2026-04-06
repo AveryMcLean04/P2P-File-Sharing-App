@@ -54,32 +54,39 @@ All messages follow this JSON structure:
 
 # Python client:
 
-    cd into Python
+Go to the Python directory:
 
-To run the python client:
+    cd Python
 
-    python main.py Alice 5000
+Run the python client:
+
+    python main.py **your username** **port number**
+
+Unit testing:
+
+    python -m pytest tests/
 
 
 
 # Java client:
-to start:
+
+Go to the Java directory:
 
     cd Java
 
-create output directory (first time only):
+Create output directory (first time only):
 
     mkdir out
 
-to compile:
+Compile:
 
     javac -cp "..\libs\jmdns-3.5.11.jar;..\libs\slf4j-api-1.7.36.jar;..\libs\slf4j-simple-1.7.36.jar;..\libs\bcprov-jdk18on-1.83.jar;..\libs\junit-4.13.2.jar;..\libs\hamcrest-core-1.3.jar" -d out src\*.java test\*.java
 
-to run:
+Run the Java client:
 
     .\run.bat *your username* *port number*
 
-for unit testing:
+Unit testing:
 
     java -cp "out;..\libs\jmdns-3.5.11.jar;..\libs\slf4j-api-1.7.36.jar;..\libs\slf4j-simple-1.7.36.jar;..\libs\bcprov-jdk18on-1.83.jar;..\libs\junit-4.13.2.jar;..\libs\hamcrest-core-1.3.jar" org.junit.runner.JUnitCore IdentityManagerTest SessionManagerTest FileManagerTest MessageDispatcherTest
 
