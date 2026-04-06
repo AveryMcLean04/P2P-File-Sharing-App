@@ -64,18 +64,23 @@ To run the python client:
 
 # Java client:
 to start:
+
     cd Java
 
 create output directory (first time only):
+
     mkdir out
 
 to compile:
+
     javac -cp "..\libs\jmdns-3.5.11.jar;..\libs\slf4j-api-1.7.36.jar;..\libs\slf4j-simple-1.7.36.jar;..\libs\bcprov-jdk18on-1.83.jar;..\libs\junit-4.13.2.jar;..\libs\hamcrest-core-1.3.jar" -d out src\*.java test\*.java
 
 to run:
+
     .\run.bat *your username* *port number*
 
 for unit testing:
+
     java -cp "out;..\libs\jmdns-3.5.11.jar;..\libs\slf4j-api-1.7.36.jar;..\libs\slf4j-simple-1.7.36.jar;..\libs\bcprov-jdk18on-1.83.jar;..\libs\junit-4.13.2.jar;..\libs\hamcrest-core-1.3.jar" org.junit.runner.JUnitCore IdentityManagerTest SessionManagerTest FileManagerTest MessageDispatcherTest
 
 ## Identity & Password
