@@ -108,12 +108,19 @@ The following command sequence demonstrates a typical interaction between Alice 
 
 | Step | User   | Command                      | Description                                      |
 |------|--------|------------------------------|--------------------------------------------------|
-| 1    | Alice  | `list`                       | Discover peers on the local network              |
-| 2    | Alice  | `connect bob`                | Initiate secure handshake with Bob               |
-| 3    | Bob    | `accept`                     | Accept the incoming connection request           |
-| 4    | Alice  | `ingest file.txt`            | Encrypt a local file into the secure vault       |
-| 5    | Alice  | `send bob file.txt`          | Transfer the encrypted file to Bob               |
-| 6    | Bob    | `decrypt file.txt new.txt`   | Decrypt the received file to a new path          |
-| 7    | Either | `exit`                       | Terminate the session and close the application  |
+| 1    | Alice  | `help`                       | Show all available commands                      |
+| 2    | Alice  | `list`                       | Discover peers on the local network              |
+| 3    | Alice  | `connect Bob`                | Initiate secure handshake with Bob               |
+| 4    | Bob    | `chat Alice`                 | Send an encrypted message                        |
+| 5    | Alice  | `ingest file.txt`            | Encrypt a local file into the secure vault       |
+| 6    | Bob    | `find file.txt`              | Search for redundant file copies                 |
+| 7    | Alice  | `send Bob file.txt`          | Transfer the encrypted file to Bob               |
+| 8    | Bob    | `accept`                     | Accept a pending file transfer                   |
+| 9    | Bob    | `vault`                      | List locally secured files                       |
+| 10   | Bob    | `decrypt file.txt new.txt`   | Decrypt the received file to a new path          |
+| 11   | Bob    | `uningest file.txt`          | Remove a file from Vault                         |
+| 12   | Alice  | `migrate`                    | Migrate identity keys                            |
+| 13   | Bob    | `test`                       | Run system diagnostics and test suite            |
+| 14   | Either | `exit`                       | Terminate the session and close the application  |
 
 *Note: This is from Python to Python. Java has similar commands with different names.
