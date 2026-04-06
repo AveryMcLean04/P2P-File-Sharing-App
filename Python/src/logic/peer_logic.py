@@ -127,25 +127,42 @@ class PeerLogic:
             self.app.log("system", f"Syncing catalog with {target_id}...")
 
     def handle_list_request(self, sender: str, payload: dict = None):
-        """Sends our local catalog to a requesting peer."""
-        files = self.app.disk_store.list_encrypted_files() 
+        """Sends our local catalog with metadata to a requesting peer."""
+        raw_files = self.app.disk_store.list_encrypted_files() 
+        files_with_metadata = []
+    
+        for fname in raw_files:
+            content = self.app.disk_store.get_shared_file_content(fname)
+            fhash = hashlib.sha256(content).hexdigest()
+            files_with_metadata.append({
+                "filename": fname,
+                "hash": fhash
+            })
+
         peer = self.app.discovery.peers.get(sender)
         if peer:
             self.app.network.send_message(peer['ip'], peer['port'], {
-                "type": "FILE_LIST_RESPONSE", "sender": self.app.user_id, "payload": {"files": files}
+                "type": "FILE_LIST_RESPONSE", 
+                "sender": self.app.user_id, 
+                "payload": {"files": files_with_metadata}
             })
 
     def process_file_list_response(self, sender: str, payload: dict):
-        """Modified to cache hashes from the original source."""
         files = payload.get("files", [])
     
         print(f"\r\033[K[CATALOG] Peer '{sender}' offers {len(files)} files:")
         for f in files:
-            fname = f['filename']
-            fhash = f['hash']
-            # Cache the hash as the 'Source of Truth' for this file
-            self.metadata_cache[fname] = fhash
-            print(f"  > {fname} (SHA256: {fhash[:8]}...)")
+            # Safety check: ensure 'f' is a dictionary
+            if not isinstance(f, dict):
+                self.app.log("error", f"Malformed file entry from {sender}: {f}")
+                continue
+            
+            fname = f.get('filename')
+            fhash = f.get('hash')
+        
+            if fname and fhash:
+                self.metadata_cache[fname] = fhash
+                print(f"  > {fname} (SHA256: {fhash[:8]}...)")
 
         print(f"{self.app.user_id} > ", end="", flush=True)
 
