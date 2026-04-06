@@ -41,6 +41,16 @@ Files stored in the `/data` folders are encrypted at rest.
 
 ---
 
+## Identity & Password
+Each peer has a long-term Ed25519 identity keypair stored in two files:
+- `identity.pub` — public key (not secret)
+- `identity.key` — private key, encrypted with your password
+
+On first run you will be prompted to set a password. Use the same password every time you run the program.
+To reset your identity, simply delete both files and restart — a new keypair will be generated and you will be prompted to set a new password.
+
+---
+
 ## Shared Message Formats
 All messages follow this JSON structure:
 ```json
@@ -105,14 +115,3 @@ The following command sequence demonstrates a typical interaction between Alice 
 | 5    | Alice  | `send bob file.txt`          | Transfer the encrypted file to Bob               |
 | 6    | Bob    | `decrypt file.txt new.txt`   | Decrypt the received file to a new path          |
 | 7    | Either | `exit`                       | Terminate the session and close the application  |
-|------|--------|------------------------------|--------------------------------------------------|
-
----
-
-## Identity & Password
-Each peer has a long-term Ed25519 identity keypair stored in two files:
-- `identity.pub` — public key (not secret)
-- `identity.key` — private key, encrypted with your password
-
-On first run you will be prompted to set a password. Use the same password every time you run the program.
-To reset your identity, simply delete both files and restart — a new keypair will be generated and you will be prompted to set a new password.
