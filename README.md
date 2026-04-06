@@ -2,6 +2,8 @@
 
 A cross-platform (Python/Java) peer-to-peer file sharing application focusing on mutual authentication, perfect forward secrecy, and local network discovery.
 
+---
+
 ## Connection Details
 - **mDNS Service String:** `_cisc468secshare._tcp.local.`
 - **Port Number:** `5000`
@@ -52,7 +54,7 @@ All messages follow this JSON structure:
 
 ---
 
-# Python client:
+## Python client:
 
 Go to the Python directory:
 
@@ -66,43 +68,9 @@ Unit testing:
 
     python -m pytest tests/
 
-## Sample Workflow:
+---
 
-Terminal 1 (Alice)
-
-    python main.py alice 5000
-
-Terminal 2 (Bob)
-
-    python main.py bob 5001
-
-Alice
-
-    list
-    connect bob
-    chat bob "Hello Bob!"
-
-    ingest example.txt
-    vault
-    send bob example.txt
-
-Bob
-
-    list
-    accept
-    fetch alice
-    request alice example.txt
-    decrypt example.txt restored_example.txt
-
-Either side
-
-    find example.txt
-    test
-    exit
-
-
-
-# Java client:
+## Java client:
 
 Go to the Java directory:
 
@@ -124,10 +92,27 @@ Unit testing:
 
     java -cp "out;..\libs\jmdns-3.5.11.jar;..\libs\slf4j-api-1.7.36.jar;..\libs\slf4j-simple-1.7.36.jar;..\libs\bcprov-jdk18on-1.83.jar;..\libs\junit-4.13.2.jar;..\libs\hamcrest-core-1.3.jar" org.junit.runner.JUnitCore IdentityManagerTest SessionManagerTest FileManagerTest MessageDispatcherTest
 
+## Common Workflow
+
+The following command sequence demonstrates a typical interaction between Alice and Bob:
+
+| Step | User   | Command                      | Description                                      |
+|------|--------|------------------------------|--------------------------------------------------|
+| 1    | Alice  | `list`                       | Discover peers on the local network              |
+| 2    | Alice  | `connect bob`                | Initiate secure handshake with Bob               |
+| 3    | Bob    | `accept`                     | Accept the incoming connection request           |
+| 4    | Alice  | `ingest file.txt`            | Encrypt a local file into the secure vault       |
+| 5    | Alice  | `send bob file.txt`          | Transfer the encrypted file to Bob               |
+| 6    | Bob    | `decrypt file.txt new.txt`   | Decrypt the received file to a new path          |
+| 7    | Either | `exit`                       | Terminate the session and close the application  |
+|------|--------|------------------------------|--------------------------------------------------|
+
+---
+
 ## Identity & Password
 Each peer has a long-term Ed25519 identity keypair stored in two files:
 - `identity.pub` — public key (not secret)
 - `identity.key` — private key, encrypted with your password
 
 On first run you will be prompted to set a password. Use the same password every time you run the program.
-To reset your identity (e.g. to change your password or start fresh), simply delete both files and restart — a new keypair will be generated and you will be prompted to set a new password.
+To reset your identity, simply delete both files and restart — a new keypair will be generated and you will be prompted to set a new password.
