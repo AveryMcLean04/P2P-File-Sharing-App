@@ -3,6 +3,7 @@ import os
 import time
 from pathlib import Path
 from typing import List, Optional
+import sys
 
 class AppCLI:
     """
@@ -247,7 +248,7 @@ class AppCLI:
         import subprocess
         self.app.log("system", "Launching external test suite...")
         try:
-            result = subprocess.run(["pytest", "tests/"], capture_output=True, text=True)
+            result = subprocess.run([sys.executable, "-m","pytest", "tests/"], capture_output=True, text=True)
             print(result.stdout)
             if result.returncode == 0:
                 self.app.log("security", "All automated tests passed.")
