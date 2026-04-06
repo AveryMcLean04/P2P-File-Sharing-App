@@ -65,8 +65,8 @@ public class FileManager {
                 Files.write(saltFile, salt);
             }
 
-            // Derive a 256-bit AES key from the password and salt with PBDKF2 wiht 65,536 iterations
-            PBEKeySpec spec = new PBEKeySpec(password, salt, 65536, 256);
+            // Derive a 256-bit AES key from the password and salt with PBKDF2 wiht 100,000 iterations
+            PBEKeySpec spec = new PBEKeySpec(password, salt, 100000, 256);
             SecretKeyFactory factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
             this.vaultKey = factory.generateSecret(spec).getEncoded();
             

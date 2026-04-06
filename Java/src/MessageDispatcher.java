@@ -58,7 +58,9 @@ public class MessageDispatcher {
                             byte[] fData = java.nio.file.Files.readAllBytes(fPath);
                             byte[] hBytes = java.security.MessageDigest.getInstance("SHA-256").digest(fData);
                             fHash = org.bouncycastle.util.encoders.Hex.toHexString(hBytes);
-                        } catch (Exception e) {}
+                        } catch (Exception e) {
+                            // ignore missing file for manifest hash
+                        }
 
                         manifestBuilder.append("{\"filename\":\"").append(fName).append("\", \"hash\":\"").append(fHash).append("\"}");
 

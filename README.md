@@ -36,7 +36,7 @@ All files are hashed using **SHA-256** before transmission. The receiver must ve
 
 ### 4. Local Storage (Requirement 9)
 Files stored in the `/data` folders are encrypted at rest.
-- **Algorithm:** AES-256-CBC.
+- **Algorithm:** AES-256-GCM.
 - **Key Derivation:** PBKDF2 with 100k iterations.
 
 ---
@@ -141,4 +141,40 @@ The following command sequence demonstrates a typical interaction between Alice 
 | 10   | Alice  | `migrate`                    | Migrate identity keys to a new keypair           |
 | 11   | Either | `exit`                       | Terminate the session and close the application  |
 
-*Note: This is from Python to Python. Java has similar commands with different names.
+*Note: This is from Python to Python. Java has similar commands with different names
+
+## Sample Workflow 
+
+To easily test the cross-language functionality between the Python and Java clients on the same machine, open two separate terminal windows and follow this workflow.
+
+Terminal 1: Start the Python Client
+cd python_client
+python main.py Alice_Py 5001
+(Set a master password when prompted)
+
+Terminal 2: Start the Java Client
+cd java_client
+.\run.bat Bob_Java 5002
+(Set a master password when prompted)
+
+Step 1 | Alice (Python) : list
+Expected result: should discover Bob on the local network
+
+Step 2 | Alice (Python): connect Bob_Java
+Expected result: should show secure session established with Bob
+
+Step 3 | Bob (Java): chat Alice_Py
+Expected result: Bob should be prompted to enter a message, and it should appear in Alice's terminal
+
+Step 4 | Bob (Java): import
+(requires user to make a file in the staging folder)
+Expected result: Bob's file should be encrypted into the vault and moved to the shared folder while being removed from the staging directory
+
+Step 5 | Alice (Python): fetch Bob_Java
+Expected result: Alice should see the files that Bob is displaying in his manifest
+
+Step 6 | Bob (Java): send Alice_Py test.txt
+Expected result: Alice should be prompted to accept or deny the file transfer
+
+Step 7 | Alice (Python): accept
+Expected result: Alice approves the transfer and should be stored in the vault

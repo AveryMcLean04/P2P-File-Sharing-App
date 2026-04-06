@@ -104,15 +104,4 @@ public class SessionManager {
         return cipher.doFinal(ct);
     }
 
-    public static void main(String[] args) {
-        /**
-         * not used in main application, but can be run to generate a 
-         * sample keypair and print the public key in Base64 format.
-         */
-        SessionManager session = new SessionManager();
-        byte[] pubBytes = session.getPublicBytes();
-        String pubKeyBase64 = Base64.getEncoder().encodeToString(pubBytes);
-        System.out.println("Ephemeral public key (Base64): " + pubKeyBase64);
-        System.out.println("Public key size (Base64): " + pubKeyBase64.length() + " characters");
-    }
 }

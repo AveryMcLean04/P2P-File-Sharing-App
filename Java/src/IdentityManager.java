@@ -38,7 +38,7 @@ public class IdentityManager {
     }
 
     // Constants for key encryption
-    private static final int PBKDF2_ITERATIONS = 200_000;
+    private static final int PBKDF2_ITERATIONS = 100_000;
     private static final int PBKDF2_KEY_LENGTH  = 256; 
     private static final int SALT_SIZE          = 16;  
 
