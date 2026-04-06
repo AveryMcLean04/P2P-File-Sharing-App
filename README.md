@@ -104,7 +104,7 @@ Unit testing:
 
 ## Common Workflow
 
-The following command sequence demonstrates a typical interaction between Alice and Bob:
+The following command sequence demonstrates a typical interaction between Alice and Bob*:
 
 | Step | User   | Command                      | Description                                      |
 |------|--------|------------------------------|--------------------------------------------------|
@@ -115,3 +115,5 @@ The following command sequence demonstrates a typical interaction between Alice 
 | 5    | Alice  | `send bob file.txt`          | Transfer the encrypted file to Bob               |
 | 6    | Bob    | `decrypt file.txt new.txt`   | Decrypt the received file to a new path          |
 | 7    | Either | `exit`                       | Terminate the session and close the application  |
+
+*Note: This is from Python to Python. Java has similar commands with different names.
