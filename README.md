@@ -57,6 +57,7 @@ All messages follow this JSON structure:
     cd into Python
 
 To run the python client:
+
     python main.py Alice 5000
 
 
