@@ -54,29 +54,29 @@ All messages follow this JSON structure:
 
 # Python client:
 
-## Go to the Python directory:
+Go to the Python directory:
 
     cd Python
 
-## Run the python client:
+Run the python client:
 
     python main.py **your username** **port number**
 
-## Unit testing:
+Unit testing:
 
     python -m pytest tests/
 
 ## Sample Workflow:
 
-### Terminal 1 (Alice)
+Terminal 1 (Alice)
 
     python main.py alice 5000
 
-### Terminal 2 (Bob)
+Terminal 2 (Bob)
 
     python main.py bob 5001
 
-### Alice
+Alice
 
     list
     connect bob
@@ -86,7 +86,7 @@ All messages follow this JSON structure:
     vault
     send bob example.txt
 
-### Bob
+Bob
 
     list
     accept
@@ -94,7 +94,7 @@ All messages follow this JSON structure:
     request alice example.txt
     decrypt example.txt restored_example.txt
 
-### Either side
+Either side
 
     find example.txt
     test
