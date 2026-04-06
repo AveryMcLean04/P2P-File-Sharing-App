@@ -17,12 +17,20 @@ public class IdentityManagerTest {
 
     @Before
     public void setUp() throws Exception {
+        /**
+         * Creates a fresh IdentityManager and generates a new keypair
+         * for the test user before each test.
+         */
         identity = new IdentityManager(testUser);
         identity.loadOrGenerate(testPassword);
     }
 
     @After
     public void tearDown() throws Exception {
+        /**
+         * Deletes the entire test user data directory after each test
+         * to ensure a clean slate for the next one.
+         */
         Path dir = Paths.get("data_" + testUser);
         if (Files.exists(dir)) {
             Files.walk(dir)
@@ -34,6 +42,10 @@ public class IdentityManagerTest {
 
     @Test
     public void testKeyGenerationAndLoading() throws Exception {
+        /**
+         * Verifies that a generated keypair can be saved to disk and reloaded,
+         * and that the public key is the correct 32-byte size for Ed25519.
+         */
         byte[] pubKey = identity.getPublicKeyBytes();
         assertNotNull("Public key should not be null", pubKey);
         assertEquals("Ed25519 public key should be exactly 32 bytes", 32, pubKey.length);
@@ -41,12 +53,16 @@ public class IdentityManagerTest {
         IdentityManager loadedIdentity = new IdentityManager(testUser);
         loadedIdentity.loadOrGenerate(testPassword);
         byte[] loadedPubKey = loadedIdentity.getPublicKeyBytes();
-        
+
         assertArrayEquals("Loaded public key should match the generated one", pubKey, loadedPubKey);
     }
 
     @Test
     public void testValidSignatureVerification() throws Exception {
+        /**
+         * Verifies that a signature produced by the private key is successfully
+         * verified against the corresponding public key.
+         */
         byte[] dummyData = "This is a secret handshake message".getBytes("UTF-8");
 
         byte[] signature = identity.sign(dummyData);
@@ -59,6 +75,10 @@ public class IdentityManagerTest {
 
     @Test
     public void testInvalidSignatureRejection() throws Exception {
+        /**
+         * Verifies that a signature produced for one piece of data is rejected
+         * when verified against different (tampered) data.
+         */
         byte[] originalData = "This is a secret handshake message".getBytes("UTF-8");
         byte[] tamperedData = "This is a HACKED handshake message".getBytes("UTF-8");
 
@@ -72,14 +92,18 @@ public class IdentityManagerTest {
 
     @Test
     public void testKeyMigration() throws Exception {
+        /**
+         * Verifies that key migration produces a new keypair, and that the new
+         * public key is signed by the old private key to prove authorized ownership.
+         */
         byte[] oldPubKey = identity.getPublicKeyBytes();
 
         String[] migrationData = identity.migrateKey(testPassword);
-        
+
         byte[] newPubKey = java.util.Base64.getDecoder().decode(migrationData[0]);
         byte[] signature = java.util.Base64.getDecoder().decode(migrationData[1]);
 
-        assertFalse("New public key must be different from the old one", 
+        assertFalse("New public key must be different from the old one",
                     java.util.Arrays.equals(oldPubKey, newPubKey));
 
         boolean isValidLink = identity.verify(oldPubKey, newPubKey, signature);
@@ -88,6 +112,10 @@ public class IdentityManagerTest {
 
     @Test
     public void testLoadWithIncorrectPasswordThrowsException() throws Exception {
+        /**
+         * Verifies that loading an existing identity with the wrong password
+         * throws an exception, preventing unauthorized access to the private key.
+         */
         IdentityManager hackerIdentity = new IdentityManager(testUser);
         char[] wrongPassword = "wrong_password_123".toCharArray();
         boolean exceptionThrown = false;
