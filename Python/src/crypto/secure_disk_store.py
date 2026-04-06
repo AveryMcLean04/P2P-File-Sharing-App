@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 from typing import List, Dict, Optional
-from crypto.encryption import FileEncryptor
+from .encryption import FileEncryptor
 
 class SecureDiskStore:
     """

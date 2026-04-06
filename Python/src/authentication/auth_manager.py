@@ -6,8 +6,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives.asymmetric import x25519, ed25519
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-
-from crypto.encryption import FileEncryptor
+from ..crypto.encryption import FileEncryptor
 
 class AuthManager:
     """Manages identity, vault security, and cryptographic trust."""
