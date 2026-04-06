@@ -104,7 +104,7 @@ Unit testing:
 
 ## Common Commands
 
-The following command sequence demonstrates a typical interaction between Alice and Bob*:
+The following command sequence demonstrates a typical interaction between Alice and Bob:
 
 ### Python
 
