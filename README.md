@@ -106,6 +106,8 @@ Unit testing:
 
 The following command sequence demonstrates a typical interaction between Alice and Bob*:
 
+## Pthon
+
 | Step | User   | Command                      | Description                                      |
 |------|--------|------------------------------|--------------------------------------------------|
 | 1    | Alice  | `help`                       | Show all available commands                      |
@@ -122,5 +124,21 @@ The following command sequence demonstrates a typical interaction between Alice 
 | 12   | Alice  | `migrate`                    | Migrate identity keys                            |
 | 13   | Bob    | `test`                       | Run system diagnostics and test suite            |
 | 14   | Either | `exit`                       | Terminate the session and close the application  |
+
+
+## Java
+| Step | User   | Command                      | Description                                      |
+|------|--------|------------------------------|--------------------------------------------------|
+| 1    | Alice  | `list`                       | Discover peers on the local network              |
+| 2    | Alice  | `connect Bob`                | Initiate secure handshake with Bob               |
+| 3    | Bob    | `chat Alice`                 | Send an encrypted message                        |
+| 4    | Alice  | `import`                     | Move files from the local staging folder into the encrypted Vault |
+| 5    | Bob    | `fetch Alice`                | Request Alice's shared file list manifest        |
+| 6    | Bob    | `request Alice file.txt`     | Request to download a specific file from Alice   |
+| 7    | Alice  | `y` (or `yes`)               | Approve the pending file transfer request        |
+| 8    | Alice  | `send Bob file.txt`          | Proactively offer a file to Bob                  |
+| 9    | Bob    | `y` (or `yes`)               | Accept the proactively offered file from Alice   |
+| 10   | Alice  | `migrate`                    | Migrate identity keys to a new keypair           |
+| 11   | Either | `exit`                       | Terminate the session and close the application  |
 
 *Note: This is from Python to Python. Java has similar commands with different names.
