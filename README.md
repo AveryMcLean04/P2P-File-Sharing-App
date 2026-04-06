@@ -66,6 +66,43 @@ Unit testing:
 
     python -m pytest tests/
 
+# --- SAMPLE WORKFLOW ---
+
+# Terminal 1 (Alice)
+
+    python main.py alice 5000
+
+# Terminal 2 (Bob)
+
+    python main.py bob 5001
+
+
+# --- Alice ---
+
+    list
+    connect bob
+    chat bob "Hello Bob!"
+
+    ingest example.txt
+    vault
+    send bob example.txt
+
+
+# --- Bob ---
+
+    list
+    accept
+    fetch alice
+    request alice example.txt
+    decrypt example.txt restored_example.txt
+
+
+# --- Either side ---
+
+    find example.txt
+    test
+    exit
+
 
 
 # Java client:

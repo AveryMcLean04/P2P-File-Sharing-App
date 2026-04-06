@@ -21,7 +21,7 @@ class AppCLI:
             "vault":    {"func": self.cmd_vault,      "desc": "List locally secured files"},
             "ingest":   {"func": self.cmd_ingest,     "desc": "Encrypt a local file into Vault <path>"},
             "uningest": {"func": self.cmd_uningest,   "desc": "Remove a file from Vault <filename>"},
-            "decrypt": {"func": self.cmd_decrypt, "desc": "Decrypt a vault file to a local path <filename> <dest_path>"},
+            "decrypt":  {"func": self.cmd_decrypt,    "desc": "Decrypt a vault file to a local path <filename> <dest_path>"},
             "fetch":    {"func": self.cmd_fetch,      "desc": "Request a list of shared files <UserID>"},
             "request":  {"func": self.cmd_request,    "desc": "Download a file from a peer <UserID> <filename>"},
             "send":     {"func": self.cmd_send,       "desc": "Propose a file transfer <UserID> <filename>"},
