@@ -102,11 +102,11 @@ Unit testing:
 
     java -cp "out;..\libs\jmdns-3.5.11.jar;..\libs\slf4j-api-1.7.36.jar;..\libs\slf4j-simple-1.7.36.jar;..\libs\bcprov-jdk18on-1.83.jar;..\libs\junit-4.13.2.jar;..\libs\hamcrest-core-1.3.jar" org.junit.runner.JUnitCore IdentityManagerTest SessionManagerTest FileManagerTest MessageDispatcherTest
 
-## Common Workflow
+## Common Commands
 
 The following command sequence demonstrates a typical interaction between Alice and Bob*:
 
-## Pthon
+### Python
 
 | Step | User   | Command                      | Description                                      |
 |------|--------|------------------------------|--------------------------------------------------|
@@ -126,7 +126,7 @@ The following command sequence demonstrates a typical interaction between Alice 
 | 14   | Either | `exit`                       | Terminate the session and close the application  |
 
 
-## Java
+### Java
 | Step | User   | Command                      | Description                                      |
 |------|--------|------------------------------|--------------------------------------------------|
 | 1    | Alice  | `list`                       | Discover peers on the local network              |
@@ -141,7 +141,6 @@ The following command sequence demonstrates a typical interaction between Alice 
 | 10   | Alice  | `migrate`                    | Migrate identity keys to a new keypair           |
 | 11   | Either | `exit`                       | Terminate the session and close the application  |
 
-*Note: This is from Python to Python. Java has similar commands with different names
 
 ## Sample Workflow 
 
