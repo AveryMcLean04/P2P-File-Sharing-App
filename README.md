@@ -84,8 +84,3 @@ Each peer has a long-term Ed25519 identity keypair stored in two files:
 
 On first run you will be prompted to set a password. Use the same password every time you run the program.
 To reset your identity (e.g. to change your password or start fresh), simply delete both files and restart — a new keypair will be generated and you will be prompted to set a new password.
-
-or to run without the bat file:
-    java -cp "out;..\libs\jmdns-3.5.11.jar;..\libs\slf4j-api-1.7.36.jar;..\libs\slf4j-simple-1.7.36.jar" PeerDiscovery Bob_java
-
-Replace Bob_java with whatever name you want to use for your peer.
